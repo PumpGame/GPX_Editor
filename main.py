@@ -86,13 +86,19 @@ class GPXEditor:
         self._build_toolbar()
         self._update_plot(full=True)
         self._set_title()
+        # --- podpis autora ---
+        ax_author = plt.axes([0.83, 0.01, 0.15, 0.03])  # pozycja (x, y, szerokość, wysokość)
+        ax_author.axis("off")
+        ax_author.text(0.5, 0.5, "© 2025 surfplorer",
+                    ha="center", va="center", fontsize=8, color="gray")
+
         plt.show()
 
     # -------------------------- GUI helpers --------------------------
 
     def _set_title(self):
         try:
-            self.fig.canvas.manager.set_window_title("GPXEditor")
+            self.fig.canvas.manager.set_window_title("GPXEditor — by surfplorer")
         except Exception:
             pass
         self.ax.set_title(
@@ -139,7 +145,7 @@ class GPXEditor:
         self.btn_show = Button(self.ax_map_browser, 'Podgląd w przeglądarce')
         self.btn_show.on_clicked(lambda e: self.show_map())
 
-        self.btn_copy = Button(self.ax_copy, '📋 Kopiuj współrzędne')
+        self.btn_copy = Button(self.ax_copy, '✎ Kopiuj współrzędne')
         self.btn_copy.on_clicked(lambda e: self.copy_selected_coords())
 
         self.btn_undo = Button(self.ax_undo, 'Undo')
@@ -170,10 +176,10 @@ class GPXEditor:
         self.btn_cutX_end = Button(self.ax_cutX2, f'Usuń X koniec')
         self.btn_cutX_end.on_clicked(lambda e: self._remove_x_from('end'))
 
-        self.btn_rect = Button(self.ax_rect, '🔲 Zaznacz prostokątem')
+        self.btn_rect = Button(self.ax_rect, '■ Zaznacz prostokątem')
         self.btn_rect.on_clicked(lambda e: self.activate_rectangle_selection())
 
-        self.btn_lasso = Button(self.ax_lasso, '✏️ Zaznacz lassem')
+        self.btn_lasso = Button(self.ax_lasso, '✏ Zaznacz lassem')
         self.btn_lasso.on_clicked(lambda e: self.activate_lasso_selection())
 
         # Selektory (inaczej nie pojawią się atrybuty przy pierwszym użyciu)
