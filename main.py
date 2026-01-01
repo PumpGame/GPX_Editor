@@ -66,6 +66,7 @@ class GPXEditor:
         self.press_idx = None
         self.press_key = None
         self.press_canvas_xy = None
+        self.press_on_selected = False
         self.track_line = None
         self.scatter = None
 
@@ -530,6 +531,7 @@ class GPXEditor:
                 self.press_idx = None
                 self.press_key = None
                 self.press_canvas_xy = None
+                self.press_on_selected = False
                 return
 
             # Zapisz kliknięcie i wystartuj przeciąganie dopiero po progu
@@ -537,6 +539,7 @@ class GPXEditor:
             self.press_idx = idx
             self.press_key = event.key
             self.press_canvas_xy = (event.x, event.y)
+            self.press_on_selected = idx in self.selected
 
     def _on_motion(self, event):
         # pan PPM
@@ -563,9 +566,10 @@ class GPXEditor:
             dy_px = event.y - self.press_canvas_xy[1]
             if (dx_px * dx_px + dy_px * dy_px) >= 16:  # 4px próg
                 self._apply_selection_click(self.press_idx, self.press_key)
-                self.dragged = True
-                self.drag_origin = (event.xdata, event.ydata)
-                self._push_undo()
+                if self.press_idx in self.selected:
+                    self.dragged = True
+                    self.drag_origin = (event.xdata, event.ydata)
+                    self._push_undo()
 
         # przeciąganie zaznaczonych LPM
         if self.dragged and event.xdata is not None and event.ydata is not None:
@@ -588,6 +592,7 @@ class GPXEditor:
         self.press_idx = None
         self.press_key = None
         self.press_canvas_xy = None
+        self.press_on_selected = False
         if self.gpx_loaded and self.x.size:
             self.kdtree = KDTree(np.c_[self.x, self.y]) if KDTree is not None else None
 
