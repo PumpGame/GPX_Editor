@@ -54,6 +54,7 @@ class GPXEditor:
         self.basemap_loaded = False
         self.basemap_img = None
         self.basemap_extent = None
+        self.basemap_artist = None
 
         # --- widok / interakcja ---
         self.xlim_current = None
@@ -61,6 +62,8 @@ class GPXEditor:
         self.dragged = False
         self.drag_origin = None
         self.last_canvas_xy = None
+        self.track_line = None
+        self.scatter = None
 
         # --- undo/redo ---
         self._undo = []
@@ -646,23 +649,46 @@ class GPXEditor:
         # Pełny redraw?
         if full:
             self.ax.clear()
+            self.track_line = None
+            self.scatter = None
+            self.basemap_artist = None
 
         # Podkład
         if self.basemap_enabled:
             self._ensure_basemap()
             if self.basemap_img is not None and self.basemap_extent is not None:
-                self.ax.imshow(self.basemap_img, extent=self.basemap_extent,
-                               interpolation='bilinear', zorder=0)
+                if self.basemap_artist is None:
+                    self.basemap_artist = self.ax.imshow(
+                        self.basemap_img,
+                        extent=self.basemap_extent,
+                        interpolation='bilinear',
+                        zorder=0
+                    )
+                else:
+                    self.basemap_artist.set_data(self.basemap_img)
+                    self.basemap_artist.set_extent(self.basemap_extent)
+        elif self.basemap_artist is not None:
+            self.basemap_artist.remove()
+            self.basemap_artist = None
 
         # Ślad
         if self.x.size:
-            self.ax.plot(self.x, self.y, '-', zorder=4)
             colors = np.array(['red'] * self.x.size, dtype=object)
             if self.selected:
                 idxs = np.fromiter(self.selected, dtype=int)
                 idxs = idxs[(idxs >= 0) & (idxs < self.x.size)]
                 colors[idxs] = 'green'
-            self.ax.scatter(self.x, self.y, c=colors, s=14, zorder=5)
+            if self.track_line is None:
+                (self.track_line,) = self.ax.plot(self.x, self.y, '-', zorder=4)
+            else:
+                self.track_line.set_data(self.x, self.y)
+
+            if self.scatter is None:
+                self.scatter = self.ax.scatter(self.x, self.y, c=colors, s=14, zorder=5)
+            else:
+                offsets = np.column_stack((self.x, self.y))
+                self.scatter.set_offsets(offsets)
+                self.scatter.set_facecolor(colors)
 
             if self.xlim_current and self.ylim_current:
                 self.ax.set_xlim(*self.xlim_current)
@@ -671,11 +697,12 @@ class GPXEditor:
                 self._reset_view()
 
         # info box – odtwórz box po clear()
-        self.info_text = self.ax.text(
-            0.01, 0.98, self.info_text.get_text(),
-            transform=self.ax.transAxes, va='top',
-            fontsize=10, color='black', bbox=dict(facecolor='white', alpha=0.7)
-        )
+        if full or self.info_text not in self.ax.texts:
+            self.info_text = self.ax.text(
+                0.01, 0.98, self.info_text.get_text(),
+                transform=self.ax.transAxes, va='top',
+                fontsize=10, color='black', bbox=dict(facecolor='white', alpha=0.7)
+            )
         self._set_title()
         self.fig.canvas.draw_idle()
 
