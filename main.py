@@ -507,7 +507,7 @@ class GPXEditor:
 
         # PPM – pan
         if event.button == MouseButton.RIGHT:
-            self.last_canvas_xy = (event.xdata, event.ydata)
+            self.last_canvas_xy = (event.x, event.y)
             return
 
         # LPM – wybór/przeciąganie
@@ -555,14 +555,21 @@ class GPXEditor:
 
     def _on_motion(self, event):
         # pan PPM
-        if event.button == MouseButton.RIGHT and self.last_canvas_xy and event.xdata and event.ydata:
-            dx = event.xdata - self.last_canvas_xy[0]
-            dy = event.ydata - self.last_canvas_xy[1]
-            x0, x1 = self.ax.get_xlim()
-            y0, y1 = self.ax.get_ylim()
-            self.ax.set_xlim(x0 - dx, x1 - dx)
-            self.ax.set_ylim(y0 - dy, y1 - dy)
-            self.last_canvas_xy = (event.xdata, event.ydata)
+        if event.button == MouseButton.RIGHT and self.last_canvas_xy and event.x is not None and event.y is not None:
+            last_x, last_y = self.last_canvas_xy
+            if event.x == last_x and event.y == last_y:
+                return
+            inv = self.ax.transData.inverted()
+            x_prev, y_prev = inv.transform((last_x, last_y))
+            x_curr, y_curr = inv.transform((event.x, event.y))
+            dx = x_curr - x_prev
+            dy = y_curr - y_prev
+            if dx or dy:
+                x0, x1 = self.ax.get_xlim()
+                y0, y1 = self.ax.get_ylim()
+                self.ax.set_xlim(x0 - dx, x1 - dx)
+                self.ax.set_ylim(y0 - dy, y1 - dy)
+            self.last_canvas_xy = (event.x, event.y)
             self.fig.canvas.draw_idle()
             return
 
