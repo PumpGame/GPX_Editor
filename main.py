@@ -76,11 +76,34 @@ class GPXEditor:
         self.tk.withdraw()
 
         # --- GUI ---
+        self.ui_theme = {
+            "window_bg": "#f3f5f7",
+            "plot_bg": "#ffffff",
+            "panel_bg": "#e9edf2",
+            "text": "#1f2933",
+            "muted_text": "#5f6b7a",
+            "primary": "#2563eb",
+            "primary_hover": "#1d4ed8",
+            "success": "#059669",
+            "success_hover": "#047857",
+            "warning": "#d97706",
+            "warning_hover": "#b45309",
+            "neutral": "#6b7280",
+            "neutral_hover": "#4b5563",
+        }
         self.fig, self.ax = plt.subplots(figsize=(14, 9))
-        plt.subplots_adjust(bottom=0.22)
+        self.fig.patch.set_facecolor(self.ui_theme["window_bg"])
+        self.ax.set_facecolor(self.ui_theme["plot_bg"])
+        plt.subplots_adjust(bottom=0.24)
         self.info_text = self.ax.text(
             0.01, 0.98, '', transform=self.ax.transAxes, va='top',
-            fontsize=10, color='black', bbox=dict(facecolor='white', alpha=0.7)
+            fontsize=10, color=self.ui_theme["text"],
+            bbox=dict(
+                facecolor=self.ui_theme["panel_bg"],
+                edgecolor="#d0d7de",
+                boxstyle="round,pad=0.3",
+                alpha=0.9,
+            ),
         )
         self._connect_events()
         self._build_toolbar()
@@ -124,6 +147,14 @@ class GPXEditor:
         def axat(x, y, w):
             return plt.axes([x, y, w, h])
 
+        def style_button(button, color, hover, text_color=None, font_size=9):
+            button.color = color
+            button.hovercolor = hover
+            if text_color is None:
+                text_color = "white"
+            button.label.set_color(text_color)
+            button.label.set_fontsize(font_size)
+
         # --- Górny rząd ---
         self.ax_open = axat(0.02, y2, 0.10)
         self.ax_save = axat(0.13, y2, 0.10)
@@ -135,24 +166,31 @@ class GPXEditor:
 
         self.btn_open = Button(self.ax_open, 'Otwórz GPX')
         self.btn_open.on_clicked(lambda e: self.load_gpx())
+        style_button(self.btn_open, self.ui_theme["primary"], self.ui_theme["primary_hover"])
 
         self.btn_save = Button(self.ax_save, 'Zapisz…')
         self.btn_save.on_clicked(lambda e: self.save_gpx())
+        style_button(self.btn_save, self.ui_theme["success"], self.ui_theme["success_hover"])
 
         self.btn_map = Button(self.ax_map_toggle, 'Mapa ON/OFF')
         self.btn_map.on_clicked(lambda e: self.toggle_basemap())
+        style_button(self.btn_map, self.ui_theme["neutral"], self.ui_theme["neutral_hover"])
 
         self.btn_show = Button(self.ax_map_browser, 'Podgląd w przeglądarce')
         self.btn_show.on_clicked(lambda e: self.show_map())
+        style_button(self.btn_show, self.ui_theme["primary"], self.ui_theme["primary_hover"])
 
         self.btn_copy = Button(self.ax_copy, '✎ Kopiuj współrzędne')
         self.btn_copy.on_clicked(lambda e: self.copy_selected_coords())
+        style_button(self.btn_copy, self.ui_theme["success"], self.ui_theme["success_hover"])
 
         self.btn_undo = Button(self.ax_undo, 'Undo')
         self.btn_undo.on_clicked(lambda e: self._undo_action())
+        style_button(self.btn_undo, self.ui_theme["neutral"], self.ui_theme["neutral_hover"])
 
         self.btn_redo = Button(self.ax_redo, 'Redo')
         self.btn_redo.on_clicked(lambda e: self._redo_action())
+        style_button(self.btn_redo, self.ui_theme["neutral"], self.ui_theme["neutral_hover"])
 
         # --- Dolny rząd ---
         self.ax_cut1 = axat(0.02, y1, 0.10)
@@ -165,22 +203,33 @@ class GPXEditor:
 
         self.btn_cut_start = Button(self.ax_cut1, '< Usuń 1 start')
         self.btn_cut_start.on_clicked(lambda e: self.remove_first_n(1))
+        style_button(self.btn_cut_start, self.ui_theme["warning"], self.ui_theme["warning_hover"])
 
         self.btn_cut_end = Button(self.ax_cut2, 'Usuń 1 koniec >')
         self.btn_cut_end.on_clicked(lambda e: self.remove_last_n(1))
+        style_button(self.btn_cut_end, self.ui_theme["warning"], self.ui_theme["warning_hover"])
 
         self.txt_cut = TextBox(self.ax_txt, 'X:', initial='10')
+        self.txt_cut.ax.set_facecolor(self.ui_theme["panel_bg"])
+        self.txt_cut.text_disp.set_color(self.ui_theme["text"])
+        self.txt_cut.text_disp.set_fontsize(9)
+        self.txt_cut.label.set_color(self.ui_theme["muted_text"])
+        self.txt_cut.label.set_fontsize(9)
         self.btn_cutX_start = Button(self.ax_cutX1, f'Usuń X start')
         self.btn_cutX_start.on_clicked(lambda e: self._remove_x_from('start'))
+        style_button(self.btn_cutX_start, self.ui_theme["warning"], self.ui_theme["warning_hover"])
 
         self.btn_cutX_end = Button(self.ax_cutX2, f'Usuń X koniec')
         self.btn_cutX_end.on_clicked(lambda e: self._remove_x_from('end'))
+        style_button(self.btn_cutX_end, self.ui_theme["warning"], self.ui_theme["warning_hover"])
 
         self.btn_rect = Button(self.ax_rect, '■ Zaznacz prostokątem')
         self.btn_rect.on_clicked(lambda e: self.activate_rectangle_selection())
+        style_button(self.btn_rect, self.ui_theme["primary"], self.ui_theme["primary_hover"])
 
         self.btn_lasso = Button(self.ax_lasso, '✏ Zaznacz lassem')
         self.btn_lasso.on_clicked(lambda e: self.activate_lasso_selection())
+        style_button(self.btn_lasso, self.ui_theme["primary"], self.ui_theme["primary_hover"])
 
         # Selektory (inaczej nie pojawią się atrybuty przy pierwszym użyciu)
         self.rect_selector = None
