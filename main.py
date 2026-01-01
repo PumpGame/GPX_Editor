@@ -67,6 +67,7 @@ class GPXEditor:
         self.press_key = None
         self.press_canvas_xy = None
         self.press_on_selected = False
+        self.hover_idx = None
         self.track_line = None
         self.scatter = None
 
@@ -561,6 +562,14 @@ class GPXEditor:
             self.fig.canvas.draw_idle()
             return
 
+        if not self.dragged and event.xdata is not None and event.ydata is not None:
+            idx, dist = self._nearest_index(event.xdata, event.ydata)
+            pick_tol = 12.0  # ~metry w EPSG:3857
+            new_hover = idx if (dist is not None and dist <= pick_tol) else None
+            if new_hover != self.hover_idx:
+                self.hover_idx = new_hover
+                self._update_plot()
+
         if self.pending_drag and not self.dragged and event.x is not None and event.y is not None:
             dx_px = event.x - self.press_canvas_xy[0]
             dy_px = event.y - self.press_canvas_xy[1]
@@ -593,6 +602,7 @@ class GPXEditor:
         self.press_key = None
         self.press_canvas_xy = None
         self.press_on_selected = False
+        self.hover_idx = None
         if self.gpx_loaded and self.x.size:
             self.kdtree = KDTree(np.c_[self.x, self.y]) if KDTree is not None else None
 
@@ -711,6 +721,9 @@ class GPXEditor:
                 idxs = np.fromiter(self.selected, dtype=int)
                 idxs = idxs[(idxs >= 0) & (idxs < self.x.size)]
                 colors[idxs] = 'green'
+            if self.hover_idx is not None and 0 <= self.hover_idx < self.x.size:
+                if self.hover_idx not in self.selected:
+                    colors[self.hover_idx] = 'orange'
             if self.track_line is None:
                 (self.track_line,) = self.ax.plot(self.x, self.y, '-', zorder=4)
             else:
