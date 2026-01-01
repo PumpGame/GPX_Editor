@@ -62,6 +62,10 @@ class GPXEditor:
         self.dragged = False
         self.drag_origin = None
         self.last_canvas_xy = None
+        self.pending_drag = False
+        self.press_idx = None
+        self.press_key = None
+        self.press_canvas_xy = None
         self.track_line = None
         self.scatter = None
 
@@ -520,38 +524,19 @@ class GPXEditor:
                 # klik w puste: wyczyść selekcję (chyba że trzymasz Shift/Ctrl)
                 if not (event.key == 'shift' or event.key == 'control'):
                     self.selected.clear()
-                self._update_plot()
-                self._update_info_text()
+                    self._update_plot()
+                    self._update_info_text()
+                self.pending_drag = False
+                self.press_idx = None
+                self.press_key = None
+                self.press_canvas_xy = None
                 return
 
-            if event.key == 'shift':
-                if idx in self.selected:
-                    self.selected.remove(idx)
-                else:
-                    self.selected.add(idx)
-                self._update_plot()
-                self._update_info_text()
-                return
-
-            if event.key == 'control':
-                if self.selected:
-                    a = min(self.selected)
-                    b = idx
-                    lo, hi = (a, b) if a <= b else (b, a)
-                    self.selected = set(range(lo, hi + 1))
-                else:
-                    self.selected = {idx}
-                self._update_plot()
-                self._update_info_text()
-                return
-
-            # zwykły klik – pojedynczy wybór i start przeciągania
-            self.selected = {idx}
-            self.dragged = True
-            self.drag_origin = (event.xdata, event.ydata)
-            self._push_undo()
-            self._update_plot()
-            self._update_info_text()
+            # Zapisz kliknięcie i wystartuj przeciąganie dopiero po progu
+            self.pending_drag = True
+            self.press_idx = idx
+            self.press_key = event.key
+            self.press_canvas_xy = (event.x, event.y)
 
     def _on_motion(self, event):
         # pan PPM
@@ -573,6 +558,15 @@ class GPXEditor:
             self.fig.canvas.draw_idle()
             return
 
+        if self.pending_drag and not self.dragged and event.x is not None and event.y is not None:
+            dx_px = event.x - self.press_canvas_xy[0]
+            dy_px = event.y - self.press_canvas_xy[1]
+            if (dx_px * dx_px + dy_px * dy_px) >= 16:  # 4px próg
+                self._apply_selection_click(self.press_idx, self.press_key)
+                self.dragged = True
+                self.drag_origin = (event.xdata, event.ydata)
+                self._push_undo()
+
         # przeciąganie zaznaczonych LPM
         if self.dragged and event.xdata is not None and event.ydata is not None:
             dx = event.xdata - self.drag_origin[0]
@@ -585,9 +579,15 @@ class GPXEditor:
             self._update_plot()
 
     def _on_release(self, event):
+        if self.pending_drag and not self.dragged and self.press_idx is not None:
+            self._apply_selection_click(self.press_idx, self.press_key)
         self.dragged = False
         self.drag_origin = None
         self.last_canvas_xy = None
+        self.pending_drag = False
+        self.press_idx = None
+        self.press_key = None
+        self.press_canvas_xy = None
         if self.gpx_loaded and self.x.size:
             self.kdtree = KDTree(np.c_[self.x, self.y]) if KDTree is not None else None
 
@@ -606,6 +606,27 @@ class GPXEditor:
         self.ax.set_xlim(new_xlim)
         self.ax.set_ylim(new_ylim)
         self.fig.canvas.draw_idle()
+
+    def _apply_selection_click(self, idx, key):
+        if idx is None:
+            return
+        if key == 'shift':
+            if idx in self.selected:
+                self.selected.remove(idx)
+            else:
+                self.selected.add(idx)
+        elif key == 'control':
+            if self.selected:
+                a = min(self.selected)
+                b = idx
+                lo, hi = (a, b) if a <= b else (b, a)
+                self.selected = set(range(lo, hi + 1))
+            else:
+                self.selected = {idx}
+        else:
+            self.selected = {idx}
+        self._update_plot()
+        self._update_info_text()
 
     def _on_key(self, event):
         if not event.key:
