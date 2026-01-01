@@ -85,11 +85,16 @@ class GPXEditor:
         self.tk.withdraw()
 
         # --- GUI ---
-        self.fig, self.ax = plt.subplots(figsize=(14, 9))
-        plt.subplots_adjust(bottom=0.22)
-        self.info_text = self.ax.text(
-            0.01, 0.98, '', transform=self.ax.transAxes, va='top',
-            fontsize=10, color='black', bbox=dict(facecolor='white', alpha=0.7)
+        self.fig = plt.figure(figsize=(14, 9))
+        gs = self.fig.add_gridspec(1, 2, width_ratios=[3.5, 1.0])
+        self.ax = self.fig.add_subplot(gs[0, 0])
+        self.ax_info = self.fig.add_subplot(gs[0, 1])
+        self.ax_info.axis("off")
+        plt.subplots_adjust(bottom=0.22, left=0.05, right=0.98, wspace=0.02)
+        self.info_text = self.ax_info.text(
+            0.02, 0.98, '', transform=self.ax_info.transAxes, va='top',
+            fontsize=10, color='black',
+            bbox=dict(facecolor='white', alpha=0.7, edgecolor='lightgray')
         )
         self._connect_events()
         self._build_toolbar()
@@ -743,11 +748,12 @@ class GPXEditor:
                 self._reset_view()
 
         # info box – odtwórz box po clear()
-        if full or self.info_text not in self.ax.texts:
-            self.info_text = self.ax.text(
-                0.01, 0.98, self.info_text.get_text(),
-                transform=self.ax.transAxes, va='top',
-                fontsize=10, color='black', bbox=dict(facecolor='white', alpha=0.7)
+        if full and self.info_text not in self.ax_info.texts:
+            self.info_text = self.ax_info.text(
+                0.02, 0.98, self.info_text.get_text(),
+                transform=self.ax_info.transAxes, va='top',
+                fontsize=10, color='black',
+                bbox=dict(facecolor='white', alpha=0.7, edgecolor='lightgray')
             )
         self._set_title()
         self.fig.canvas.draw_idle()
