@@ -8,8 +8,8 @@ GPXEditor — single-file GPX track editor with:
 - Undo/Redo for all edits
 - Basemap toggle, map preview in browser
 - Right-button pan, scroll zoom, drag selected points
-Tested on Python 3.10+ with TkAgg backend.
-Dependencies: matplotlib (QtAgg), gpxpy, folium, contextily, pyproj, numpy (optional: scipy for KDTree)
+Tested on Python 3.10+ with QtAgg backend.
+Dependencies: matplotlib (QtAgg), PySide6, gpxpy, folium, contextily, pyproj, numpy (optional: scipy for KDTree)
 """
 import matplotlib
 matplotlib.use("QtAgg")
@@ -26,10 +26,12 @@ import folium
 import contextily as ctx
 from pyproj import Transformer
 
-from PySide6 import QtWidgets
+from PySide6 import QtCore, QtWidgets
 
-import matplotlib.pyplot as plt
-from matplotlib.widgets import Button, TextBox, RectangleSelector, LassoSelector
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
+from matplotlib.figure import Figure
+from matplotlib.widgets import RectangleSelector, LassoSelector
 from matplotlib.backend_bases import MouseButton
 from matplotlib.path import Path
 
@@ -40,7 +42,7 @@ except Exception:
 
 
 class GPXEditor:
-    def __init__(self):
+    def __init__(self, fig, ax, canvas):
         # --- dane GPX / stan ---
         self.x = np.array([], dtype=float)   # EPSG:3857
         self.y = np.array([], dtype=float)
@@ -75,28 +77,20 @@ class GPXEditor:
 
         # --- Qt app (dialogs + clipboard) ---
         self.qt_app = QtWidgets.QApplication.instance()
-        if self.qt_app is None:
-            self.qt_app = QtWidgets.QApplication(sys.argv)
-        self.qt_app.setApplicationName("GPXEditor")
 
         # --- GUI ---
-        self.fig, self.ax = plt.subplots(figsize=(14, 9))
-        plt.subplots_adjust(bottom=0.22)
+        self.fig = fig
+        self.ax = ax
+        self.canvas = canvas
+        self.fig.set_facecolor("#ffffff")
         self.info_text = self.ax.text(
             0.01, 0.98, '', transform=self.ax.transAxes, va='top',
             fontsize=10, color='black', bbox=dict(facecolor='white', alpha=0.7)
         )
         self._connect_events()
-        self._build_toolbar()
         self._update_plot(full=True)
         self._set_title()
-        # --- podpis autora ---
-        ax_author = plt.axes([0.83, 0.01, 0.15, 0.03])  # pozycja (x, y, szerokość, wysokość)
-        ax_author.axis("off")
-        ax_author.text(0.5, 0.5, "© 2025 surfplorer",
-                    ha="center", va="center", fontsize=8, color="gray")
-
-        plt.show()
+        self.cut_input = None
 
     # -------------------------- GUI helpers --------------------------
 
@@ -112,81 +106,12 @@ class GPXEditor:
         )
 
     def _connect_events(self):
-        c = self.fig.canvas.mpl_connect
+        c = self.canvas.mpl_connect
         c('button_press_event', self._on_press)
         c('motion_notify_event', self._on_motion)
         c('button_release_event', self._on_release)
         c('scroll_event', self._on_scroll)
         c('key_press_event', self._on_key)
-
-    def _build_toolbar(self):
-        # Dwie rzędy kontrolerów (mniejsze przyciski)
-        h = 0.05
-        y1 = 0.02  # dolny rząd
-        y2 = 0.09  # górny rząd
-
-        def axat(x, y, w):
-            return plt.axes([x, y, w, h])
-
-        # --- Górny rząd ---
-        self.ax_open = axat(0.02, y2, 0.10)
-        self.ax_save = axat(0.13, y2, 0.10)
-        self.ax_map_toggle = axat(0.24, y2, 0.11)
-        self.ax_map_browser = axat(0.36, y2, 0.14)
-        self.ax_copy = axat(0.51, y2, 0.14)
-        self.ax_undo = axat(0.66, y2, 0.08)
-        self.ax_redo = axat(0.75, y2, 0.08)
-
-        self.btn_open = Button(self.ax_open, 'Otwórz GPX')
-        self.btn_open.on_clicked(lambda e: self.load_gpx())
-
-        self.btn_save = Button(self.ax_save, 'Zapisz…')
-        self.btn_save.on_clicked(lambda e: self.save_gpx())
-
-        self.btn_map = Button(self.ax_map_toggle, 'Mapa ON/OFF')
-        self.btn_map.on_clicked(lambda e: self.toggle_basemap())
-
-        self.btn_show = Button(self.ax_map_browser, 'Podgląd w przeglądarce')
-        self.btn_show.on_clicked(lambda e: self.show_map())
-
-        self.btn_copy = Button(self.ax_copy, '✎ Kopiuj współrzędne')
-        self.btn_copy.on_clicked(lambda e: self.copy_selected_coords())
-
-        self.btn_undo = Button(self.ax_undo, 'Undo')
-        self.btn_undo.on_clicked(lambda e: self._undo_action())
-
-        self.btn_redo = Button(self.ax_redo, 'Redo')
-        self.btn_redo.on_clicked(lambda e: self._redo_action())
-
-        # --- Dolny rząd ---
-        self.ax_cut1 = axat(0.02, y1, 0.10)
-        self.ax_cut2 = axat(0.13, y1, 0.10)
-        self.ax_txt = axat(0.24, y1, 0.06)  # TextBox na X
-        self.ax_cutX1 = axat(0.31, y1, 0.12)
-        self.ax_cutX2 = axat(0.44, y1, 0.12)
-        self.ax_rect = axat(0.57, y1, 0.16)
-        self.ax_lasso = axat(0.74, y1, 0.16)
-
-        self.btn_cut_start = Button(self.ax_cut1, '< Usuń 1 start')
-        self.btn_cut_start.on_clicked(lambda e: self.remove_first_n(1))
-
-        self.btn_cut_end = Button(self.ax_cut2, 'Usuń 1 koniec >')
-        self.btn_cut_end.on_clicked(lambda e: self.remove_last_n(1))
-
-        self.txt_cut = TextBox(self.ax_txt, 'X:', initial='10')
-        self.btn_cutX_start = Button(self.ax_cutX1, f'Usuń X start')
-        self.btn_cutX_start.on_clicked(lambda e: self._remove_x_from('start'))
-
-        self.btn_cutX_end = Button(self.ax_cutX2, f'Usuń X koniec')
-        self.btn_cutX_end.on_clicked(lambda e: self._remove_x_from('end'))
-
-        self.btn_rect = Button(self.ax_rect, '■ Zaznacz prostokątem')
-        self.btn_rect.on_clicked(lambda e: self.activate_rectangle_selection())
-
-        self.btn_lasso = Button(self.ax_lasso, '✏ Zaznacz lassem')
-        self.btn_lasso.on_clicked(lambda e: self.activate_lasso_selection())
-
-        # Selektory (inaczej nie pojawią się atrybuty przy pierwszym użyciu)
         self.rect_selector = None
         self.lasso_selector = None
 
@@ -443,7 +368,10 @@ class GPXEditor:
 
     # ---- przycinanie ----
     def _remove_x_from(self, where):
-        value = self.txt_cut.text.strip()
+        if self.cut_input is None:
+            print("⚠️ Brak pola X.")
+            return
+        value = self.cut_input.text().strip()
         try:
             n = int(value)
         except Exception:
@@ -706,6 +634,137 @@ class GPXEditor:
         self.fig.canvas.draw_idle()
 
 
+class MainWindow(QtWidgets.QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("GPXEditor — by surfplorer")
+        self.resize(1400, 900)
+        self._apply_theme()
+        self._build_ui()
+
+    def _apply_theme(self):
+        self.setStyleSheet(
+            """
+            QWidget {
+                background: #f5f7fb;
+                color: #1f2933;
+                font-family: "Segoe UI", "Inter", sans-serif;
+                font-size: 11pt;
+            }
+            QPushButton {
+                background: #ffffff;
+                border: 1px solid #d6dbe1;
+                border-radius: 8px;
+                padding: 6px 12px;
+            }
+            QPushButton:hover {
+                background: #eef2f6;
+            }
+            QPushButton:pressed {
+                background: #e1e6eb;
+            }
+            QLineEdit {
+                background: #ffffff;
+                border: 1px solid #d6dbe1;
+                border-radius: 6px;
+                padding: 4px 8px;
+            }
+            QGroupBox {
+                border: 1px solid #d6dbe1;
+                border-radius: 10px;
+                margin-top: 10px;
+                padding: 6px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 12px;
+                padding: 0 6px;
+            }
+            """
+        )
+
+    def _build_ui(self):
+        central = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(central)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        controls_top = QtWidgets.QGroupBox("Plik i podgląd")
+        controls_top_layout = QtWidgets.QHBoxLayout(controls_top)
+        controls_top_layout.setSpacing(10)
+
+        controls_bottom = QtWidgets.QGroupBox("Edycja i zaznaczanie")
+        controls_bottom_layout = QtWidgets.QHBoxLayout(controls_bottom)
+        controls_bottom_layout.setSpacing(10)
+
+        figure = Figure(figsize=(12, 8), facecolor="#ffffff")
+        canvas = FigureCanvas(figure)
+        toolbar = NavigationToolbar(canvas, self)
+        toolbar.setIconSize(QtCore.QSize(18, 18))
+
+        ax = figure.add_subplot(111)
+        self.editor = GPXEditor(figure, ax, canvas)
+
+        btn_open = QtWidgets.QPushButton("Otwórz GPX")
+        btn_open.clicked.connect(self.editor.load_gpx)
+        btn_save = QtWidgets.QPushButton("Zapisz…")
+        btn_save.clicked.connect(self.editor.save_gpx)
+        btn_map = QtWidgets.QPushButton("Mapa ON/OFF")
+        btn_map.clicked.connect(self.editor.toggle_basemap)
+        btn_preview = QtWidgets.QPushButton("Podgląd w przeglądarce")
+        btn_preview.clicked.connect(self.editor.show_map)
+        btn_copy = QtWidgets.QPushButton("Kopiuj współrzędne")
+        btn_copy.clicked.connect(self.editor.copy_selected_coords)
+        btn_undo = QtWidgets.QPushButton("Undo")
+        btn_undo.clicked.connect(self.editor._undo_action)
+        btn_redo = QtWidgets.QPushButton("Redo")
+        btn_redo.clicked.connect(self.editor._redo_action)
+
+        controls_top_layout.addWidget(btn_open)
+        controls_top_layout.addWidget(btn_save)
+        controls_top_layout.addWidget(btn_map)
+        controls_top_layout.addWidget(btn_preview)
+        controls_top_layout.addWidget(btn_copy)
+        controls_top_layout.addWidget(btn_undo)
+        controls_top_layout.addWidget(btn_redo)
+        controls_top_layout.addStretch()
+
+        btn_cut_start = QtWidgets.QPushButton("Usuń 1 start")
+        btn_cut_start.clicked.connect(lambda: self.editor.remove_first_n(1))
+        btn_cut_end = QtWidgets.QPushButton("Usuń 1 koniec")
+        btn_cut_end.clicked.connect(lambda: self.editor.remove_last_n(1))
+        cut_input = QtWidgets.QLineEdit("10")
+        cut_input.setFixedWidth(70)
+        btn_cut_x_start = QtWidgets.QPushButton("Usuń X start")
+        btn_cut_x_start.clicked.connect(lambda: self.editor._remove_x_from("start"))
+        btn_cut_x_end = QtWidgets.QPushButton("Usuń X koniec")
+        btn_cut_x_end.clicked.connect(lambda: self.editor._remove_x_from("end"))
+        btn_rect = QtWidgets.QPushButton("Zaznacz prostokątem")
+        btn_rect.clicked.connect(self.editor.activate_rectangle_selection)
+        btn_lasso = QtWidgets.QPushButton("Zaznacz lassem")
+        btn_lasso.clicked.connect(self.editor.activate_lasso_selection)
+
+        controls_bottom_layout.addWidget(btn_cut_start)
+        controls_bottom_layout.addWidget(btn_cut_end)
+        controls_bottom_layout.addWidget(QtWidgets.QLabel("X:"))
+        controls_bottom_layout.addWidget(cut_input)
+        controls_bottom_layout.addWidget(btn_cut_x_start)
+        controls_bottom_layout.addWidget(btn_cut_x_end)
+        controls_bottom_layout.addWidget(btn_rect)
+        controls_bottom_layout.addWidget(btn_lasso)
+        controls_bottom_layout.addStretch()
+
+        self.editor.cut_input = cut_input
+
+        layout.addWidget(controls_top)
+        layout.addWidget(controls_bottom)
+        layout.addWidget(toolbar)
+        layout.addWidget(canvas, stretch=1)
+
+        self.setCentralWidget(central)
+        self.statusBar().showMessage("© 2025 surfplorer")
+
+
 @atexit.register
 def cleanup():
     try:
@@ -715,4 +774,8 @@ def cleanup():
 
 
 if __name__ == "__main__":
-    GPXEditor()
+    app = QtWidgets.QApplication(sys.argv)
+    app.setApplicationName("GPXEditor")
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec())
