@@ -27,6 +27,7 @@ packaging==25.0
 pillow==11.3.0
 pyparsing==3.2.5
 pyproj==3.7.1
+PySide6==6.9.3
 python-dateutil==2.9.0.post0
 rasterio==1.4.3
 requests==2.32.5
