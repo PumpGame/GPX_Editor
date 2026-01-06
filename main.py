@@ -9,15 +9,15 @@ GPXEditor — single-file GPX track editor with:
 - Basemap toggle, map preview in browser
 - Right-button pan, scroll zoom, drag selected points
 Tested on Python 3.10+ with TkAgg backend.
-Dependencies: matplotlib, gpxpy, folium, contextily, pyproj, numpy (optional: scipy for KDTree)
+Dependencies: matplotlib (QtAgg), gpxpy, folium, contextily, pyproj, numpy (optional: scipy for KDTree)
 """
 import matplotlib
-matplotlib.use("TkAgg")
+matplotlib.use("QtAgg")
 
+import sys
 import os
 import atexit
 import webbrowser
-from tkinter import Tk, filedialog
 
 import numpy as np
 import gpxpy
@@ -25,6 +25,8 @@ import gpxpy.gpx
 import folium
 import contextily as ctx
 from pyproj import Transformer
+
+from PySide6 import QtWidgets
 
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Button, TextBox, RectangleSelector, LassoSelector
@@ -71,9 +73,11 @@ class GPXEditor:
         self.to_merc = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
         self.to_wgs84 = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
 
-        # --- Tk root (dialogs + clipboard) ---
-        self.tk = Tk()
-        self.tk.withdraw()
+        # --- Qt app (dialogs + clipboard) ---
+        self.qt_app = QtWidgets.QApplication.instance()
+        if self.qt_app is None:
+            self.qt_app = QtWidgets.QApplication(sys.argv)
+        self.qt_app.setApplicationName("GPXEditor")
 
         # --- GUI ---
         self.fig, self.ax = plt.subplots(figsize=(14, 9))
@@ -189,7 +193,12 @@ class GPXEditor:
     # -------------------------- GPX I/O --------------------------
 
     def load_gpx(self):
-        path = filedialog.askopenfilename(title="Otwórz GPX", filetypes=[("GPX files", "*.gpx")])
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            None,
+            "Otwórz GPX",
+            "",
+            "GPX files (*.gpx)",
+        )
         if not path:
             return
 
@@ -258,11 +267,11 @@ class GPXEditor:
 
         self.segment.points = new_points
 
-        path = filedialog.asksaveasfilename(
-            title="Zapisz jako...",
-            defaultextension=".gpx",
-            initialfile="edited.gpx",
-            filetypes=[("GPX files", "*.gpx")]
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            None,
+            "Zapisz jako...",
+            "edited.gpx",
+            "GPX files (*.gpx)",
         )
         if path:
             with open(path, 'w', encoding='utf-8') as f:
@@ -425,9 +434,8 @@ class GPXEditor:
                 lines.append(f"{lat:.7f}, {lon:.7f}")
         text = "\n".join(lines)
         try:
-            self.tk.clipboard_clear()
-            self.tk.clipboard_append(text)
-            self.tk.update()  # aby schowek nie znikał po zamknięciu
+            clipboard = self.qt_app.clipboard()
+            clipboard.setText(text)
             print("📋 Skopiowano do schowka:")
             print(text)
         except Exception as e:
