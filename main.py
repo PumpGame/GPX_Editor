@@ -14,6 +14,8 @@ Dependencies: matplotlib (QtAgg), PySide6, gpxpy, folium, contextily, pyproj, nu
 import matplotlib
 matplotlib.use("QtAgg")
 
+import matplotlib.pyplot as plt
+
 import sys
 import os
 import atexit
@@ -99,6 +101,7 @@ class GPXEditor:
             bbox=dict(facecolor='white', alpha=0.7, edgecolor='lightgray')
         )
         self.info_text.set_visible(False)
+        self.canvas = canvas
         self._connect_events()
         self._update_plot(full=True)
         self._set_title()
@@ -676,6 +679,10 @@ class GPXEditor:
                 self.ax.set_ylim(*self.ylim_current)
             else:
                 self._reset_view()
+                self.ax.relim()
+                self.ax.autoscale_view()
+                self.canvas.draw_idle()
+
 
         # info box – odtwórz box po clear()
         if full and self.info_text not in self.ax_info.texts:
