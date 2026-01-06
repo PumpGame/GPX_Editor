@@ -8,16 +8,16 @@ GPXEditor — single-file GPX track editor with:
 - Undo/Redo for all edits
 - Basemap toggle, map preview in browser
 - Right-button pan, scroll zoom, drag selected points
-Tested on Python 3.10+ with TkAgg backend.
-Dependencies: matplotlib, gpxpy, folium, contextily, pyproj, numpy (optional: scipy for KDTree)
+Tested on Python 3.10+ with QtAgg backend.
+Dependencies: matplotlib (QtAgg), PySide6, gpxpy, folium, contextily, pyproj, numpy (optional: scipy for KDTree)
 """
 import matplotlib
-matplotlib.use("TkAgg")
+matplotlib.use("QtAgg")
 
+import sys
 import os
 import atexit
 import webbrowser
-from tkinter import Tk, filedialog
 
 import numpy as np
 import gpxpy
@@ -26,8 +26,11 @@ import folium
 import contextily as ctx
 from pyproj import Transformer
 
-import matplotlib.pyplot as plt
-from matplotlib.widgets import Button, TextBox, RectangleSelector, LassoSelector
+from PySide6 import QtCore, QtWidgets
+
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
+from matplotlib.widgets import RectangleSelector, LassoSelector
 from matplotlib.backend_bases import MouseButton
 from matplotlib.path import Path
 
@@ -38,7 +41,7 @@ except Exception:
 
 
 class GPXEditor:
-    def __init__(self):
+    def __init__(self, fig, ax, canvas):
         # --- dane GPX / stan ---
         self.x = np.array([], dtype=float)   # EPSG:3857
         self.y = np.array([], dtype=float)
@@ -80,9 +83,8 @@ class GPXEditor:
         self.to_merc = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
         self.to_wgs84 = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
 
-        # --- Tk root (dialogs + clipboard) ---
-        self.tk = Tk()
-        self.tk.withdraw()
+        # --- Qt app (dialogs + clipboard) ---
+        self.qt_app = QtWidgets.QApplication.instance()
 
         # --- GUI ---
         self.fig = plt.figure(figsize=(14, 9))
@@ -96,17 +98,11 @@ class GPXEditor:
             fontsize=10, color='black',
             bbox=dict(facecolor='white', alpha=0.7, edgecolor='lightgray')
         )
+        self.info_text.set_visible(False)
         self._connect_events()
-        self._build_toolbar()
         self._update_plot(full=True)
         self._set_title()
-        # --- podpis autora ---
-        ax_author = plt.axes([0.83, 0.01, 0.15, 0.03])  # pozycja (x, y, szerokość, wysokość)
-        ax_author.axis("off")
-        ax_author.text(0.5, 0.5, "© 2025 surfplorer",
-                    ha="center", va="center", fontsize=8, color="gray")
-
-        plt.show()
+        self.cut_input = None
 
     # -------------------------- GUI helpers --------------------------
 
@@ -115,95 +111,27 @@ class GPXEditor:
             self.fig.canvas.manager.set_window_title("GPXEditor — by surfplorer")
         except Exception:
             pass
-        self.ax.set_title(
-            "Scroll=zoom | PPM=pan | LPM=wybór/przeciąganie | Shift+klik=toggle | "
-            "Ctrl+klik=zakres | Del=usuń | Ctrl+Z/Y=undo/redo | R=reset | M=mapa | "
-            "[ / ]: -/+ 10 | Shift+[ / ]: 50 | Ctrl+[ / ]: 100"
-        )
+        self.ax.set_title("")
 
     def _connect_events(self):
-        c = self.fig.canvas.mpl_connect
+        c = self.canvas.mpl_connect
         c('button_press_event', self._on_press)
         c('motion_notify_event', self._on_motion)
         c('button_release_event', self._on_release)
         c('scroll_event', self._on_scroll)
         c('key_press_event', self._on_key)
-
-    def _build_toolbar(self):
-        # Dwie rzędy kontrolerów (mniejsze przyciski)
-        h = 0.05
-        y1 = 0.02  # dolny rząd
-        y2 = 0.09  # górny rząd
-
-        def axat(x, y, w):
-            return plt.axes([x, y, w, h])
-
-        # --- Górny rząd ---
-        self.ax_open = axat(0.02, y2, 0.10)
-        self.ax_save = axat(0.13, y2, 0.10)
-        self.ax_map_toggle = axat(0.24, y2, 0.11)
-        self.ax_map_browser = axat(0.36, y2, 0.14)
-        self.ax_copy = axat(0.51, y2, 0.14)
-        self.ax_undo = axat(0.66, y2, 0.08)
-        self.ax_redo = axat(0.75, y2, 0.08)
-
-        self.btn_open = Button(self.ax_open, 'Otwórz GPX')
-        self.btn_open.on_clicked(lambda e: self.load_gpx())
-
-        self.btn_save = Button(self.ax_save, 'Zapisz…')
-        self.btn_save.on_clicked(lambda e: self.save_gpx())
-
-        self.btn_map = Button(self.ax_map_toggle, 'Mapa ON/OFF')
-        self.btn_map.on_clicked(lambda e: self.toggle_basemap())
-
-        self.btn_show = Button(self.ax_map_browser, 'Podgląd w przeglądarce')
-        self.btn_show.on_clicked(lambda e: self.show_map())
-
-        self.btn_copy = Button(self.ax_copy, '✎ Kopiuj współrzędne')
-        self.btn_copy.on_clicked(lambda e: self.copy_selected_coords())
-
-        self.btn_undo = Button(self.ax_undo, 'Undo')
-        self.btn_undo.on_clicked(lambda e: self._undo_action())
-
-        self.btn_redo = Button(self.ax_redo, 'Redo')
-        self.btn_redo.on_clicked(lambda e: self._redo_action())
-
-        # --- Dolny rząd ---
-        self.ax_cut1 = axat(0.02, y1, 0.10)
-        self.ax_cut2 = axat(0.13, y1, 0.10)
-        self.ax_txt = axat(0.24, y1, 0.06)  # TextBox na X
-        self.ax_cutX1 = axat(0.31, y1, 0.12)
-        self.ax_cutX2 = axat(0.44, y1, 0.12)
-        self.ax_rect = axat(0.57, y1, 0.16)
-        self.ax_lasso = axat(0.74, y1, 0.16)
-
-        self.btn_cut_start = Button(self.ax_cut1, '< Usuń 1 start')
-        self.btn_cut_start.on_clicked(lambda e: self.remove_first_n(1))
-
-        self.btn_cut_end = Button(self.ax_cut2, 'Usuń 1 koniec >')
-        self.btn_cut_end.on_clicked(lambda e: self.remove_last_n(1))
-
-        self.txt_cut = TextBox(self.ax_txt, 'X:', initial='10')
-        self.btn_cutX_start = Button(self.ax_cutX1, f'Usuń X start')
-        self.btn_cutX_start.on_clicked(lambda e: self._remove_x_from('start'))
-
-        self.btn_cutX_end = Button(self.ax_cutX2, f'Usuń X koniec')
-        self.btn_cutX_end.on_clicked(lambda e: self._remove_x_from('end'))
-
-        self.btn_rect = Button(self.ax_rect, '■ Zaznacz prostokątem')
-        self.btn_rect.on_clicked(lambda e: self.activate_rectangle_selection())
-
-        self.btn_lasso = Button(self.ax_lasso, '✏ Zaznacz lassem')
-        self.btn_lasso.on_clicked(lambda e: self.activate_lasso_selection())
-
-        # Selektory (inaczej nie pojawią się atrybuty przy pierwszym użyciu)
         self.rect_selector = None
         self.lasso_selector = None
 
     # -------------------------- GPX I/O --------------------------
 
     def load_gpx(self):
-        path = filedialog.askopenfilename(title="Otwórz GPX", filetypes=[("GPX files", "*.gpx")])
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            None,
+            "Otwórz GPX",
+            "",
+            "GPX files (*.gpx)",
+        )
         if not path:
             return
 
@@ -272,11 +200,11 @@ class GPXEditor:
 
         self.segment.points = new_points
 
-        path = filedialog.asksaveasfilename(
-            title="Zapisz jako...",
-            defaultextension=".gpx",
-            initialfile="edited.gpx",
-            filetypes=[("GPX files", "*.gpx")]
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            None,
+            "Zapisz jako...",
+            "edited.gpx",
+            "GPX files (*.gpx)",
         )
         if path:
             with open(path, 'w', encoding='utf-8') as f:
@@ -439,9 +367,8 @@ class GPXEditor:
                 lines.append(f"{lat:.7f}, {lon:.7f}")
         text = "\n".join(lines)
         try:
-            self.tk.clipboard_clear()
-            self.tk.clipboard_append(text)
-            self.tk.update()  # aby schowek nie znikał po zamknięciu
+            clipboard = self.qt_app.clipboard()
+            clipboard.setText(text)
             print("📋 Skopiowano do schowka:")
             print(text)
         except Exception as e:
@@ -449,7 +376,10 @@ class GPXEditor:
 
     # ---- przycinanie ----
     def _remove_x_from(self, where):
-        value = self.txt_cut.text.strip()
+        if self.cut_input is None:
+            print("⚠️ Brak pola X.")
+            return
+        value = self.cut_input.text().strip()
         try:
             n = int(value)
         except Exception:
@@ -777,6 +707,226 @@ class GPXEditor:
         self.fig.canvas.draw_idle()
 
 
+class MainWindow(QtWidgets.QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("GPXEditor — by surfplorer")
+        self.resize(1400, 900)
+        self._selection_mode = "Single point"
+        self._apply_theme()
+        self._build_ui()
+
+    def _apply_theme(self):
+        self.setStyleSheet(
+            """
+            QWidget {
+                background: #f5f7fb;
+                color: #1f2933;
+            }
+            QPushButton {
+                background: #ffffff;
+                border: 1px solid #d6dbe1;
+                border-radius: 6px;
+                padding: 6px 10px;
+            }
+            QPushButton:hover {
+                background: #eef2f6;
+            }
+            QPushButton:pressed {
+                background: #e1e6eb;
+            }
+            QLineEdit, QSpinBox {
+                background: #ffffff;
+                border: 1px solid #d6dbe1;
+                border-radius: 4px;
+                padding: 4px 8px;
+            }
+            QGroupBox {
+                border: 1px solid #d6dbe1;
+                border-radius: 8px;
+                margin-top: 10px;
+                padding: 6px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 6px;
+            }
+            """
+        )
+
+    def _build_ui(self):
+        central = QtWidgets.QWidget()
+        layout = QtWidgets.QHBoxLayout(central)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(12)
+
+        figure = Figure(figsize=(12, 8), facecolor="#ffffff")
+        canvas = FigureCanvas(figure)
+
+        ax = figure.add_subplot(111)
+        self.editor = GPXEditor(figure, ax, canvas)
+
+        self._build_toolbar()
+
+        left_panel = QtWidgets.QWidget()
+        left_layout = QtWidgets.QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(10)
+        left_panel.setFixedWidth(260)
+
+        group_file = QtWidgets.QGroupBox("File")
+        group_file_layout = QtWidgets.QVBoxLayout(group_file)
+        btn_open = QtWidgets.QPushButton("Otwórz GPX")
+        btn_open.clicked.connect(self.editor.load_gpx)
+        btn_save = QtWidgets.QPushButton("Zapisz…")
+        btn_save.clicked.connect(self.editor.save_gpx)
+        group_file_layout.addWidget(btn_open)
+        group_file_layout.addWidget(btn_save)
+
+        group_delete = QtWidgets.QGroupBox("Delete points")
+        group_delete_layout = QtWidgets.QVBoxLayout(group_delete)
+        btn_cut_start = QtWidgets.QPushButton("Usuń 1 start")
+        btn_cut_start.clicked.connect(lambda: self.editor.remove_first_n(1))
+        btn_cut_end = QtWidgets.QPushButton("Usuń 1 koniec")
+        btn_cut_end.clicked.connect(lambda: self.editor.remove_last_n(1))
+        cut_input = QtWidgets.QSpinBox()
+        cut_input.setRange(1, 999999)
+        cut_input.setValue(10)
+        btn_cut_x_start = QtWidgets.QPushButton("Usuń X start")
+        btn_cut_x_start.clicked.connect(lambda: self.editor._remove_x_from("start"))
+        btn_cut_x_end = QtWidgets.QPushButton("Usuń X koniec")
+        btn_cut_x_end.clicked.connect(lambda: self.editor._remove_x_from("end"))
+        group_delete_layout.addWidget(btn_cut_start)
+        group_delete_layout.addWidget(btn_cut_end)
+        group_delete_layout.addWidget(QtWidgets.QLabel("X:"))
+        group_delete_layout.addWidget(cut_input)
+        group_delete_layout.addWidget(btn_cut_x_start)
+        group_delete_layout.addWidget(btn_cut_x_end)
+
+        group_selection = QtWidgets.QGroupBox("Selection mode")
+        group_selection_layout = QtWidgets.QVBoxLayout(group_selection)
+        radio_single = QtWidgets.QRadioButton("Single point")
+        radio_rect = QtWidgets.QRadioButton("Rectangle")
+        radio_lasso = QtWidgets.QRadioButton("Lasso")
+        radio_single.setChecked(True)
+        radio_single.toggled.connect(lambda checked: checked and self._set_selection_mode("Single point"))
+        radio_rect.toggled.connect(lambda checked: checked and self._set_selection_mode("Rectangle"))
+        radio_lasso.toggled.connect(lambda checked: checked and self._set_selection_mode("Lasso"))
+        group_selection_layout.addWidget(radio_single)
+        group_selection_layout.addWidget(radio_rect)
+        group_selection_layout.addWidget(radio_lasso)
+
+        group_selection_edit = QtWidgets.QGroupBox("Selection edit")
+        group_selection_edit_layout = QtWidgets.QVBoxLayout(group_selection_edit)
+        btn_delete_selected = QtWidgets.QPushButton("Delete selected")
+        btn_delete_selected.clicked.connect(self.editor.delete_selected)
+        btn_clear_selection = QtWidgets.QPushButton("Clear selection")
+        btn_clear_selection.setEnabled(False)
+        # TODO: implement clear selection action in the editor and wire this button.
+        group_selection_edit_layout.addWidget(btn_delete_selected)
+        group_selection_edit_layout.addWidget(btn_clear_selection)
+
+        group_view = QtWidgets.QGroupBox("View / tools")
+        group_view_layout = QtWidgets.QVBoxLayout(group_view)
+        btn_reset_view = QtWidgets.QPushButton("Reset view")
+        btn_reset_view.clicked.connect(self.editor._reset_view)
+        btn_copy = QtWidgets.QPushButton("Copy coordinates")
+        btn_copy.clicked.connect(self.editor.copy_selected_coords)
+        btn_preview = QtWidgets.QPushButton("Open in browser")
+        btn_preview.clicked.connect(lambda: self.editor.show_map())
+        group_view_layout.addWidget(btn_reset_view)
+        group_view_layout.addWidget(btn_copy)
+        group_view_layout.addWidget(btn_preview)
+
+        left_layout.addWidget(group_file)
+        left_layout.addWidget(group_delete)
+        left_layout.addWidget(group_selection)
+        left_layout.addWidget(group_selection_edit)
+        left_layout.addWidget(group_view)
+        left_layout.addStretch()
+
+        self.editor.cut_input = cut_input
+
+        canvas_container = QtWidgets.QWidget()
+        canvas_layout = QtWidgets.QVBoxLayout(canvas_container)
+        canvas_layout.setContentsMargins(0, 0, 0, 0)
+        canvas_layout.addWidget(canvas, stretch=1)
+
+        layout.addWidget(left_panel)
+        layout.addWidget(canvas_container, stretch=1)
+
+        self.setCentralWidget(central)
+        self._setup_status_bar()
+
+        self._status_timer = QtCore.QTimer(self)
+        self._status_timer.timeout.connect(self._update_status_bar)
+        self._status_timer.start(300)
+
+    def _build_toolbar(self):
+        toolbar = QtWidgets.QToolBar("Main")
+        toolbar.setIconSize(QtCore.QSize(18, 18))
+        self.addToolBar(toolbar)
+
+        style = self.style()
+        toolbar.addAction(
+            style.standardIcon(QtWidgets.QStyle.SP_DialogOpenButton),
+            "Open",
+            self.editor.load_gpx,
+        )
+        toolbar.addAction(
+            style.standardIcon(QtWidgets.QStyle.SP_DialogSaveButton),
+            "Save",
+            self.editor.save_gpx,
+        )
+        toolbar.addSeparator()
+        toolbar.addAction(
+            style.standardIcon(QtWidgets.QStyle.SP_ArrowBack),
+            "Undo",
+            self.editor._undo_action,
+        )
+        toolbar.addAction(
+            style.standardIcon(QtWidgets.QStyle.SP_ArrowForward),
+            "Redo",
+            self.editor._redo_action,
+        )
+        toolbar.addSeparator()
+        toolbar.addAction(
+            style.standardIcon(QtWidgets.QStyle.SP_DriveNetIcon),
+            "Map ON/OFF",
+            self.editor.toggle_basemap,
+        )
+        toolbar.addAction(
+            style.standardIcon(QtWidgets.QStyle.SP_BrowserReload),
+            "Reset view",
+            self.editor._reset_view,
+        )
+
+    def _setup_status_bar(self):
+        self._status_label = QtWidgets.QLabel()
+        self.statusBar().addPermanentWidget(self._status_label, 1)
+        self._update_status_bar()
+
+    def _update_status_bar(self):
+        total_points = int(self.editor.x.size)
+        selected_points = len(self.editor.selected)
+        shortcuts = "Scroll=zoom | PPM=pan | Del=usuń | Ctrl+Z/Y=undo/redo | R=reset | M=mapa"
+        self._status_label.setText(
+            f"Mode: {self._selection_mode} | Points: {total_points} | "
+            f"Selected: {selected_points} | {shortcuts}"
+        )
+
+    def _set_selection_mode(self, mode):
+        self._selection_mode = mode
+        if mode == "Rectangle":
+            self.editor.activate_rectangle_selection()
+        elif mode == "Lasso":
+            self.editor.activate_lasso_selection()
+        else:
+            self.editor._deactivate_selectors()
+        self._update_status_bar()
+
+
 @atexit.register
 def cleanup():
     try:
@@ -786,4 +936,8 @@ def cleanup():
 
 
 if __name__ == "__main__":
-    GPXEditor()
+    app = QtWidgets.QApplication(sys.argv)
+    app.setApplicationName("GPXEditor")
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec())
