@@ -29,7 +29,6 @@ from pyproj import Transformer
 from PySide6 import QtCore, QtWidgets
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
 from matplotlib.widgets import RectangleSelector, LassoSelector
 from matplotlib.backend_bases import MouseButton
@@ -87,6 +86,7 @@ class GPXEditor:
             0.01, 0.98, '', transform=self.ax.transAxes, va='top',
             fontsize=10, color='black', bbox=dict(facecolor='white', alpha=0.7)
         )
+        self.info_text.set_visible(False)
         self._connect_events()
         self._update_plot(full=True)
         self._set_title()
@@ -99,11 +99,7 @@ class GPXEditor:
             self.fig.canvas.manager.set_window_title("GPXEditor — by surfplorer")
         except Exception:
             pass
-        self.ax.set_title(
-            "Scroll=zoom | PPM=pan | LPM=wybór/przeciąganie | Shift+klik=toggle | "
-            "Ctrl+klik=zakres | Del=usuń | Ctrl+Z/Y=undo/redo | R=reset | M=mapa | "
-            "[ / ]: -/+ 10 | Shift+[ / ]: 50 | Ctrl+[ / ]: 100"
-        )
+        self.ax.set_title("")
 
     def _connect_events(self):
         c = self.canvas.mpl_connect
@@ -639,6 +635,7 @@ class MainWindow(QtWidgets.QMainWindow):
         super().__init__()
         self.setWindowTitle("GPXEditor — by surfplorer")
         self.resize(1400, 900)
+        self._selection_mode = "Single point"
         self._apply_theme()
         self._build_ui()
 
@@ -648,14 +645,12 @@ class MainWindow(QtWidgets.QMainWindow):
             QWidget {
                 background: #f5f7fb;
                 color: #1f2933;
-                font-family: "Segoe UI", "Inter", sans-serif;
-                font-size: 11pt;
             }
             QPushButton {
                 background: #ffffff;
                 border: 1px solid #d6dbe1;
-                border-radius: 8px;
-                padding: 6px 12px;
+                border-radius: 6px;
+                padding: 6px 10px;
             }
             QPushButton:hover {
                 background: #eef2f6;
@@ -663,21 +658,21 @@ class MainWindow(QtWidgets.QMainWindow):
             QPushButton:pressed {
                 background: #e1e6eb;
             }
-            QLineEdit {
+            QLineEdit, QSpinBox {
                 background: #ffffff;
                 border: 1px solid #d6dbe1;
-                border-radius: 6px;
+                border-radius: 4px;
                 padding: 4px 8px;
             }
             QGroupBox {
                 border: 1px solid #d6dbe1;
-                border-radius: 10px;
+                border-radius: 8px;
                 margin-top: 10px;
                 padding: 6px;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
-                left: 12px;
+                left: 10px;
                 padding: 0 6px;
             }
             """
@@ -685,84 +680,174 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _build_ui(self):
         central = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(central)
-        layout.setContentsMargins(16, 16, 16, 16)
+        layout = QtWidgets.QHBoxLayout(central)
+        layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(12)
-
-        controls_top = QtWidgets.QGroupBox("Plik i podgląd")
-        controls_top_layout = QtWidgets.QHBoxLayout(controls_top)
-        controls_top_layout.setSpacing(10)
-
-        controls_bottom = QtWidgets.QGroupBox("Edycja i zaznaczanie")
-        controls_bottom_layout = QtWidgets.QHBoxLayout(controls_bottom)
-        controls_bottom_layout.setSpacing(10)
 
         figure = Figure(figsize=(12, 8), facecolor="#ffffff")
         canvas = FigureCanvas(figure)
-        toolbar = NavigationToolbar(canvas, self)
-        toolbar.setIconSize(QtCore.QSize(18, 18))
 
         ax = figure.add_subplot(111)
         self.editor = GPXEditor(figure, ax, canvas)
 
+        self._build_toolbar()
+
+        left_panel = QtWidgets.QWidget()
+        left_layout = QtWidgets.QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(10)
+        left_panel.setFixedWidth(260)
+
+        group_file = QtWidgets.QGroupBox("File")
+        group_file_layout = QtWidgets.QVBoxLayout(group_file)
         btn_open = QtWidgets.QPushButton("Otwórz GPX")
         btn_open.clicked.connect(self.editor.load_gpx)
         btn_save = QtWidgets.QPushButton("Zapisz…")
         btn_save.clicked.connect(self.editor.save_gpx)
-        btn_map = QtWidgets.QPushButton("Mapa ON/OFF")
-        btn_map.clicked.connect(self.editor.toggle_basemap)
-        btn_preview = QtWidgets.QPushButton("Podgląd w przeglądarce")
-        btn_preview.clicked.connect(self.editor.show_map)
-        btn_copy = QtWidgets.QPushButton("Kopiuj współrzędne")
-        btn_copy.clicked.connect(self.editor.copy_selected_coords)
-        btn_undo = QtWidgets.QPushButton("Undo")
-        btn_undo.clicked.connect(self.editor._undo_action)
-        btn_redo = QtWidgets.QPushButton("Redo")
-        btn_redo.clicked.connect(self.editor._redo_action)
+        group_file_layout.addWidget(btn_open)
+        group_file_layout.addWidget(btn_save)
 
-        controls_top_layout.addWidget(btn_open)
-        controls_top_layout.addWidget(btn_save)
-        controls_top_layout.addWidget(btn_map)
-        controls_top_layout.addWidget(btn_preview)
-        controls_top_layout.addWidget(btn_copy)
-        controls_top_layout.addWidget(btn_undo)
-        controls_top_layout.addWidget(btn_redo)
-        controls_top_layout.addStretch()
-
+        group_delete = QtWidgets.QGroupBox("Delete points")
+        group_delete_layout = QtWidgets.QVBoxLayout(group_delete)
         btn_cut_start = QtWidgets.QPushButton("Usuń 1 start")
         btn_cut_start.clicked.connect(lambda: self.editor.remove_first_n(1))
         btn_cut_end = QtWidgets.QPushButton("Usuń 1 koniec")
         btn_cut_end.clicked.connect(lambda: self.editor.remove_last_n(1))
-        cut_input = QtWidgets.QLineEdit("10")
-        cut_input.setFixedWidth(70)
+        cut_input = QtWidgets.QSpinBox()
+        cut_input.setRange(1, 999999)
+        cut_input.setValue(10)
         btn_cut_x_start = QtWidgets.QPushButton("Usuń X start")
         btn_cut_x_start.clicked.connect(lambda: self.editor._remove_x_from("start"))
         btn_cut_x_end = QtWidgets.QPushButton("Usuń X koniec")
         btn_cut_x_end.clicked.connect(lambda: self.editor._remove_x_from("end"))
-        btn_rect = QtWidgets.QPushButton("Zaznacz prostokątem")
-        btn_rect.clicked.connect(self.editor.activate_rectangle_selection)
-        btn_lasso = QtWidgets.QPushButton("Zaznacz lassem")
-        btn_lasso.clicked.connect(self.editor.activate_lasso_selection)
+        group_delete_layout.addWidget(btn_cut_start)
+        group_delete_layout.addWidget(btn_cut_end)
+        group_delete_layout.addWidget(QtWidgets.QLabel("X:"))
+        group_delete_layout.addWidget(cut_input)
+        group_delete_layout.addWidget(btn_cut_x_start)
+        group_delete_layout.addWidget(btn_cut_x_end)
 
-        controls_bottom_layout.addWidget(btn_cut_start)
-        controls_bottom_layout.addWidget(btn_cut_end)
-        controls_bottom_layout.addWidget(QtWidgets.QLabel("X:"))
-        controls_bottom_layout.addWidget(cut_input)
-        controls_bottom_layout.addWidget(btn_cut_x_start)
-        controls_bottom_layout.addWidget(btn_cut_x_end)
-        controls_bottom_layout.addWidget(btn_rect)
-        controls_bottom_layout.addWidget(btn_lasso)
-        controls_bottom_layout.addStretch()
+        group_selection = QtWidgets.QGroupBox("Selection mode")
+        group_selection_layout = QtWidgets.QVBoxLayout(group_selection)
+        radio_single = QtWidgets.QRadioButton("Single point")
+        radio_rect = QtWidgets.QRadioButton("Rectangle")
+        radio_lasso = QtWidgets.QRadioButton("Lasso")
+        radio_single.setChecked(True)
+        radio_single.toggled.connect(lambda checked: checked and self._set_selection_mode("Single point"))
+        radio_rect.toggled.connect(lambda checked: checked and self._set_selection_mode("Rectangle"))
+        radio_lasso.toggled.connect(lambda checked: checked and self._set_selection_mode("Lasso"))
+        group_selection_layout.addWidget(radio_single)
+        group_selection_layout.addWidget(radio_rect)
+        group_selection_layout.addWidget(radio_lasso)
+
+        group_selection_edit = QtWidgets.QGroupBox("Selection edit")
+        group_selection_edit_layout = QtWidgets.QVBoxLayout(group_selection_edit)
+        btn_delete_selected = QtWidgets.QPushButton("Delete selected")
+        btn_delete_selected.clicked.connect(self.editor.delete_selected)
+        btn_clear_selection = QtWidgets.QPushButton("Clear selection")
+        btn_clear_selection.setEnabled(False)
+        # TODO: implement clear selection action in the editor and wire this button.
+        group_selection_edit_layout.addWidget(btn_delete_selected)
+        group_selection_edit_layout.addWidget(btn_clear_selection)
+
+        group_view = QtWidgets.QGroupBox("View / tools")
+        group_view_layout = QtWidgets.QVBoxLayout(group_view)
+        btn_reset_view = QtWidgets.QPushButton("Reset view")
+        btn_reset_view.clicked.connect(self.editor._reset_view)
+        btn_copy = QtWidgets.QPushButton("Copy coordinates")
+        btn_copy.clicked.connect(self.editor.copy_selected_coords)
+        btn_preview = QtWidgets.QPushButton("Open in browser")
+        btn_preview.clicked.connect(self.editor.show_map)
+        group_view_layout.addWidget(btn_reset_view)
+        group_view_layout.addWidget(btn_copy)
+        group_view_layout.addWidget(btn_preview)
+
+        left_layout.addWidget(group_file)
+        left_layout.addWidget(group_delete)
+        left_layout.addWidget(group_selection)
+        left_layout.addWidget(group_selection_edit)
+        left_layout.addWidget(group_view)
+        left_layout.addStretch()
 
         self.editor.cut_input = cut_input
 
-        layout.addWidget(controls_top)
-        layout.addWidget(controls_bottom)
-        layout.addWidget(toolbar)
-        layout.addWidget(canvas, stretch=1)
+        canvas_container = QtWidgets.QWidget()
+        canvas_layout = QtWidgets.QVBoxLayout(canvas_container)
+        canvas_layout.setContentsMargins(0, 0, 0, 0)
+        canvas_layout.addWidget(canvas, stretch=1)
+
+        layout.addWidget(left_panel)
+        layout.addWidget(canvas_container, stretch=1)
 
         self.setCentralWidget(central)
-        self.statusBar().showMessage("© 2025 surfplorer")
+        self._setup_status_bar()
+
+        self._status_timer = QtCore.QTimer(self)
+        self._status_timer.timeout.connect(self._update_status_bar)
+        self._status_timer.start(300)
+
+    def _build_toolbar(self):
+        toolbar = QtWidgets.QToolBar("Main")
+        toolbar.setIconSize(QtCore.QSize(18, 18))
+        self.addToolBar(toolbar)
+
+        style = self.style()
+        toolbar.addAction(
+            style.standardIcon(QtWidgets.QStyle.SP_DialogOpenButton),
+            "Open",
+            self.editor.load_gpx,
+        )
+        toolbar.addAction(
+            style.standardIcon(QtWidgets.QStyle.SP_DialogSaveButton),
+            "Save",
+            self.editor.save_gpx,
+        )
+        toolbar.addSeparator()
+        toolbar.addAction(
+            style.standardIcon(QtWidgets.QStyle.SP_ArrowBack),
+            "Undo",
+            self.editor._undo_action,
+        )
+        toolbar.addAction(
+            style.standardIcon(QtWidgets.QStyle.SP_ArrowForward),
+            "Redo",
+            self.editor._redo_action,
+        )
+        toolbar.addSeparator()
+        toolbar.addAction(
+            style.standardIcon(QtWidgets.QStyle.SP_DriveNetIcon),
+            "Map ON/OFF",
+            self.editor.toggle_basemap,
+        )
+        toolbar.addAction(
+            style.standardIcon(QtWidgets.QStyle.SP_BrowserReload),
+            "Reset view",
+            self.editor._reset_view,
+        )
+
+    def _setup_status_bar(self):
+        self._status_label = QtWidgets.QLabel()
+        self.statusBar().addPermanentWidget(self._status_label, 1)
+        self._update_status_bar()
+
+    def _update_status_bar(self):
+        total_points = int(self.editor.x.size)
+        selected_points = len(self.editor.selected)
+        shortcuts = "Scroll=zoom | PPM=pan | Del=usuń | Ctrl+Z/Y=undo/redo | R=reset | M=mapa"
+        self._status_label.setText(
+            f"Mode: {self._selection_mode} | Points: {total_points} | "
+            f"Selected: {selected_points} | {shortcuts}"
+        )
+
+    def _set_selection_mode(self, mode):
+        self._selection_mode = mode
+        if mode == "Rectangle":
+            self.editor.activate_rectangle_selection()
+        elif mode == "Lasso":
+            self.editor.activate_lasso_selection()
+        else:
+            self.editor._deactivate_selectors()
+        self._update_status_bar()
 
 
 @atexit.register
