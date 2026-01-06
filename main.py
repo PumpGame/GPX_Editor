@@ -54,6 +54,7 @@ class GPXEditor:
         self.basemap_loaded = False
         self.basemap_img = None
         self.basemap_extent = None
+        self.basemap_artist = None
 
         # --- widok / interakcja ---
         self.xlim_current = None
@@ -61,6 +62,14 @@ class GPXEditor:
         self.dragged = False
         self.drag_origin = None
         self.last_canvas_xy = None
+        self.pending_drag = False
+        self.press_idx = None
+        self.press_key = None
+        self.press_canvas_xy = None
+        self.press_on_selected = False
+        self.hover_idx = None
+        self.track_line = None
+        self.scatter = None
 
         # --- undo/redo ---
         self._undo = []
@@ -76,11 +85,16 @@ class GPXEditor:
         self.tk.withdraw()
 
         # --- GUI ---
-        self.fig, self.ax = plt.subplots(figsize=(14, 9))
-        plt.subplots_adjust(bottom=0.22)
-        self.info_text = self.ax.text(
-            0.01, 0.98, '', transform=self.ax.transAxes, va='top',
-            fontsize=10, color='black', bbox=dict(facecolor='white', alpha=0.7)
+        self.fig = plt.figure(figsize=(14, 9))
+        gs = self.fig.add_gridspec(1, 2, width_ratios=[3.5, 1.0])
+        self.ax = self.fig.add_subplot(gs[0, 0])
+        self.ax_info = self.fig.add_subplot(gs[0, 1])
+        self.ax_info.axis("off")
+        plt.subplots_adjust(bottom=0.22, left=0.05, right=0.98, wspace=0.02)
+        self.info_text = self.ax_info.text(
+            0.02, 0.98, '', transform=self.ax_info.transAxes, va='top',
+            fontsize=10, color='black',
+            bbox=dict(facecolor='white', alpha=0.7, edgecolor='lightgray')
         )
         self._connect_events()
         self._build_toolbar()
@@ -504,7 +518,7 @@ class GPXEditor:
 
         # PPM – pan
         if event.button == MouseButton.RIGHT:
-            self.last_canvas_xy = (event.xdata, event.ydata)
+            self.last_canvas_xy = (event.x, event.y)
             return
 
         # LPM – wybór/przeciąganie
@@ -517,51 +531,59 @@ class GPXEditor:
                 # klik w puste: wyczyść selekcję (chyba że trzymasz Shift/Ctrl)
                 if not (event.key == 'shift' or event.key == 'control'):
                     self.selected.clear()
-                self._update_plot()
-                self._update_info_text()
+                    self._update_plot()
+                    self._update_info_text()
+                self.pending_drag = False
+                self.press_idx = None
+                self.press_key = None
+                self.press_canvas_xy = None
+                self.press_on_selected = False
                 return
 
-            if event.key == 'shift':
-                if idx in self.selected:
-                    self.selected.remove(idx)
-                else:
-                    self.selected.add(idx)
-                self._update_plot()
-                self._update_info_text()
-                return
-
-            if event.key == 'control':
-                if self.selected:
-                    a = min(self.selected)
-                    b = idx
-                    lo, hi = (a, b) if a <= b else (b, a)
-                    self.selected = set(range(lo, hi + 1))
-                else:
-                    self.selected = {idx}
-                self._update_plot()
-                self._update_info_text()
-                return
-
-            # zwykły klik – pojedynczy wybór i start przeciągania
-            self.selected = {idx}
-            self.dragged = True
-            self.drag_origin = (event.xdata, event.ydata)
-            self._push_undo()
-            self._update_plot()
-            self._update_info_text()
+            # Zapisz kliknięcie i wystartuj przeciąganie dopiero po progu
+            self.pending_drag = True
+            self.press_idx = idx
+            self.press_key = event.key
+            self.press_canvas_xy = (event.x, event.y)
+            self.press_on_selected = idx in self.selected
 
     def _on_motion(self, event):
         # pan PPM
-        if event.button == MouseButton.RIGHT and self.last_canvas_xy and event.xdata and event.ydata:
-            dx = event.xdata - self.last_canvas_xy[0]
-            dy = event.ydata - self.last_canvas_xy[1]
-            x0, x1 = self.ax.get_xlim()
-            y0, y1 = self.ax.get_ylim()
-            self.ax.set_xlim(x0 - dx, x1 - dx)
-            self.ax.set_ylim(y0 - dy, y1 - dy)
-            self.last_canvas_xy = (event.xdata, event.ydata)
+        if event.button == MouseButton.RIGHT and self.last_canvas_xy and event.x is not None and event.y is not None:
+            last_x, last_y = self.last_canvas_xy
+            if event.x == last_x and event.y == last_y:
+                return
+            inv = self.ax.transData.inverted()
+            x_prev, y_prev = inv.transform((last_x, last_y))
+            x_curr, y_curr = inv.transform((event.x, event.y))
+            dx = x_curr - x_prev
+            dy = y_curr - y_prev
+            if dx or dy:
+                x0, x1 = self.ax.get_xlim()
+                y0, y1 = self.ax.get_ylim()
+                self.ax.set_xlim(x0 - dx, x1 - dx)
+                self.ax.set_ylim(y0 - dy, y1 - dy)
+            self.last_canvas_xy = (event.x, event.y)
             self.fig.canvas.draw_idle()
             return
+
+        if not self.dragged and event.xdata is not None and event.ydata is not None:
+            idx, dist = self._nearest_index(event.xdata, event.ydata)
+            pick_tol = 12.0  # ~metry w EPSG:3857
+            new_hover = idx if (dist is not None and dist <= pick_tol) else None
+            if new_hover != self.hover_idx:
+                self.hover_idx = new_hover
+                self._update_plot()
+
+        if self.pending_drag and not self.dragged and event.x is not None and event.y is not None:
+            dx_px = event.x - self.press_canvas_xy[0]
+            dy_px = event.y - self.press_canvas_xy[1]
+            if (dx_px * dx_px + dy_px * dy_px) >= 16:  # 4px próg
+                self._apply_selection_click(self.press_idx, self.press_key)
+                if self.press_idx in self.selected:
+                    self.dragged = True
+                    self.drag_origin = (event.xdata, event.ydata)
+                    self._push_undo()
 
         # przeciąganie zaznaczonych LPM
         if self.dragged and event.xdata is not None and event.ydata is not None:
@@ -575,9 +597,17 @@ class GPXEditor:
             self._update_plot()
 
     def _on_release(self, event):
+        if self.pending_drag and not self.dragged and self.press_idx is not None:
+            self._apply_selection_click(self.press_idx, self.press_key)
         self.dragged = False
         self.drag_origin = None
         self.last_canvas_xy = None
+        self.pending_drag = False
+        self.press_idx = None
+        self.press_key = None
+        self.press_canvas_xy = None
+        self.press_on_selected = False
+        self.hover_idx = None
         if self.gpx_loaded and self.x.size:
             self.kdtree = KDTree(np.c_[self.x, self.y]) if KDTree is not None else None
 
@@ -596,6 +626,27 @@ class GPXEditor:
         self.ax.set_xlim(new_xlim)
         self.ax.set_ylim(new_ylim)
         self.fig.canvas.draw_idle()
+
+    def _apply_selection_click(self, idx, key):
+        if idx is None:
+            return
+        if key == 'shift':
+            if idx in self.selected:
+                self.selected.remove(idx)
+            else:
+                self.selected.add(idx)
+        elif key == 'control':
+            if self.selected:
+                a = min(self.selected)
+                b = idx
+                lo, hi = (a, b) if a <= b else (b, a)
+                self.selected = set(range(lo, hi + 1))
+            else:
+                self.selected = {idx}
+        else:
+            self.selected = {idx}
+        self._update_plot()
+        self._update_info_text()
 
     def _on_key(self, event):
         if not event.key:
@@ -646,23 +697,49 @@ class GPXEditor:
         # Pełny redraw?
         if full:
             self.ax.clear()
+            self.track_line = None
+            self.scatter = None
+            self.basemap_artist = None
 
         # Podkład
         if self.basemap_enabled:
             self._ensure_basemap()
             if self.basemap_img is not None and self.basemap_extent is not None:
-                self.ax.imshow(self.basemap_img, extent=self.basemap_extent,
-                               interpolation='bilinear', zorder=0)
+                if self.basemap_artist is None:
+                    self.basemap_artist = self.ax.imshow(
+                        self.basemap_img,
+                        extent=self.basemap_extent,
+                        interpolation='bilinear',
+                        zorder=0
+                    )
+                else:
+                    self.basemap_artist.set_data(self.basemap_img)
+                    self.basemap_artist.set_extent(self.basemap_extent)
+        elif self.basemap_artist is not None:
+            self.basemap_artist.remove()
+            self.basemap_artist = None
 
         # Ślad
         if self.x.size:
-            self.ax.plot(self.x, self.y, '-', zorder=4)
             colors = np.array(['red'] * self.x.size, dtype=object)
             if self.selected:
                 idxs = np.fromiter(self.selected, dtype=int)
                 idxs = idxs[(idxs >= 0) & (idxs < self.x.size)]
                 colors[idxs] = 'green'
-            self.ax.scatter(self.x, self.y, c=colors, s=14, zorder=5)
+            if self.hover_idx is not None and 0 <= self.hover_idx < self.x.size:
+                if self.hover_idx not in self.selected:
+                    colors[self.hover_idx] = 'orange'
+            if self.track_line is None:
+                (self.track_line,) = self.ax.plot(self.x, self.y, '-', zorder=4)
+            else:
+                self.track_line.set_data(self.x, self.y)
+
+            if self.scatter is None:
+                self.scatter = self.ax.scatter(self.x, self.y, c=colors, s=14, zorder=5)
+            else:
+                offsets = np.column_stack((self.x, self.y))
+                self.scatter.set_offsets(offsets)
+                self.scatter.set_facecolor(colors)
 
             if self.xlim_current and self.ylim_current:
                 self.ax.set_xlim(*self.xlim_current)
@@ -671,11 +748,13 @@ class GPXEditor:
                 self._reset_view()
 
         # info box – odtwórz box po clear()
-        self.info_text = self.ax.text(
-            0.01, 0.98, self.info_text.get_text(),
-            transform=self.ax.transAxes, va='top',
-            fontsize=10, color='black', bbox=dict(facecolor='white', alpha=0.7)
-        )
+        if full and self.info_text not in self.ax_info.texts:
+            self.info_text = self.ax_info.text(
+                0.02, 0.98, self.info_text.get_text(),
+                transform=self.ax_info.transAxes, va='top',
+                fontsize=10, color='black',
+                bbox=dict(facecolor='white', alpha=0.7, edgecolor='lightgray')
+            )
         self._set_title()
         self.fig.canvas.draw_idle()
 
