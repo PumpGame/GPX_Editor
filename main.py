@@ -757,7 +757,7 @@ class MainWindow(QtWidgets.QMainWindow):
         btn_copy = QtWidgets.QPushButton("Copy coordinates")
         btn_copy.clicked.connect(self.editor.copy_selected_coords)
         btn_preview = QtWidgets.QPushButton("Open in browser")
-        btn_preview.clicked.connect(self.editor.show_map)
+        btn_preview.clicked.connect(lambda: self.editor.show_map())
         group_view_layout.addWidget(btn_reset_view)
         group_view_layout.addWidget(btn_copy)
         group_view_layout.addWidget(btn_preview)
