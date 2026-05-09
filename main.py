@@ -51,6 +51,7 @@ class GPXEditor:
         self.gpx = None
         self.track = None
         self.segment = None
+        self.point_metadata = []
         self.gpx_loaded = False
         self.kdtree = None
 
@@ -73,6 +74,7 @@ class GPXEditor:
         self.press_canvas_xy = None
         self.press_on_selected = False
         self.hover_idx = None
+        self.hover_annotation = None
         self.track_line = None
         self.scatter = None
 
@@ -89,19 +91,34 @@ class GPXEditor:
         self.qt_app = QtWidgets.QApplication.instance()
 
         # --- GUI ---
-        self.fig = plt.figure(figsize=(14, 9))
+        self.fig = fig
+        self.canvas = canvas
+        
+        # Clear the figure and set up axes
+        self.fig.clear()
         gs = self.fig.add_gridspec(1, 2, width_ratios=[3.5, 1.0])
         self.ax = self.fig.add_subplot(gs[0, 0])
         self.ax_info = self.fig.add_subplot(gs[0, 1])
         self.ax_info.axis("off")
-        plt.subplots_adjust(bottom=0.22, left=0.05, right=0.98, wspace=0.02)
+        self.fig.subplots_adjust(bottom=0.22, left=0.05, right=0.98, wspace=0.02)
         self.info_text = self.ax_info.text(
             0.02, 0.98, '', transform=self.ax_info.transAxes, va='top',
             fontsize=10, color='black',
             bbox=dict(facecolor='white', alpha=0.7, edgecolor='lightgray')
         )
         self.info_text.set_visible(False)
-        self.canvas = canvas
+        self.hover_annotation = self.ax.annotate(
+            "",
+            xy=(0, 0),
+            xytext=(12, 12),
+            textcoords="offset points",
+            fontsize=9,
+            color="black",
+            bbox=dict(boxstyle="round", facecolor="white", alpha=0.9, edgecolor="gray"),
+            arrowprops=dict(arrowstyle="->", color="gray", lw=0.8),
+            zorder=6,
+        )
+        self.hover_annotation.set_visible(False)
         self._connect_events()
         self._update_plot(full=True)
         self._set_title()
@@ -164,6 +181,7 @@ class GPXEditor:
         X, Y = self.to_merc.transform(lons, lats)
         self.x = np.asarray(X, dtype=float)
         self.y = np.asarray(Y, dtype=float)
+        self.point_metadata = list(self.segment.points)
 
         self.selected.clear()
         self._redo.clear()
@@ -191,8 +209,8 @@ class GPXEditor:
 
         new_points = []
         for i, (lon, lat) in enumerate(zip(lons, lats)):
-            if i < len(self.segment.points):
-                p = self.segment.points[i]
+            if i < len(self.point_metadata):
+                p = self.point_metadata[i]
                 new_points.append(gpxpy.gpx.GPXTrackPoint(
                     latitude=lat, longitude=lon,
                     elevation=p.elevation, time=p.time, symbol=p.symbol,
@@ -202,6 +220,7 @@ class GPXEditor:
                 new_points.append(gpxpy.gpx.GPXTrackPoint(latitude=lat, longitude=lon))
 
         self.segment.points = new_points
+        self.point_metadata = list(new_points)
 
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
             None,
@@ -256,7 +275,12 @@ class GPXEditor:
     def _push_undo(self):
         if self.x.size == 0:
             return
-        self._undo.append((self.x.copy(), self.y.copy(), tuple(sorted(self.selected))))
+        self._undo.append((
+            self.x.copy(),
+            self.y.copy(),
+            list(self.point_metadata),
+            tuple(sorted(self.selected)),
+        ))
         if len(self._undo) > self._undo_limit:
             self._undo.pop(0)
         self._redo.clear()
@@ -264,9 +288,15 @@ class GPXEditor:
     def _undo_action(self):
         if not self._undo:
             return
-        self._redo.append((self.x.copy(), self.y.copy(), tuple(sorted(self.selected))))
-        x, y, sel = self._undo.pop()
+        self._redo.append((
+            self.x.copy(),
+            self.y.copy(),
+            list(self.point_metadata),
+            tuple(sorted(self.selected)),
+        ))
+        x, y, point_metadata, sel = self._undo.pop()
         self.x, self.y = x, y
+        self.point_metadata = list(point_metadata)
         self.selected = set(sel)
         self.kdtree = KDTree(np.c_[self.x, self.y]) if KDTree is not None else None
         self._update_plot(full=True)
@@ -275,13 +305,81 @@ class GPXEditor:
     def _redo_action(self):
         if not self._redo:
             return
-        self._undo.append((self.x.copy(), self.y.copy(), tuple(sorted(self.selected))))
-        x, y, sel = self._redo.pop()
+        self._undo.append((
+            self.x.copy(),
+            self.y.copy(),
+            list(self.point_metadata),
+            tuple(sorted(self.selected)),
+        ))
+        x, y, point_metadata, sel = self._redo.pop()
         self.x, self.y = x, y
+        self.point_metadata = list(point_metadata)
         self.selected = set(sel)
         self.kdtree = KDTree(np.c_[self.x, self.y]) if KDTree is not None else None
         self._update_plot(full=True)
         self._update_info_text()
+
+    def get_track_duration(self):
+        times = [p.time for p in self.point_metadata if getattr(p, "time", None) is not None]
+        if len(times) < 2:
+            return None
+        duration = max(times) - min(times)
+        if duration.total_seconds() < 0:
+            return None
+        return duration
+
+    @staticmethod
+    def format_duration(duration):
+        if duration is None:
+            return "brak danych"
+        total_seconds = int(duration.total_seconds())
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        if hours:
+            return f"{hours} h {minutes:02d} min {seconds:02d} s"
+        if minutes:
+            return f"{minutes} min {seconds:02d} s"
+        return f"{seconds} s"
+
+    def _format_point_hover_text(self, idx):
+        if not (0 <= idx < len(self.point_metadata)):
+            return ""
+        point = self.point_metadata[idx]
+        lon, lat = self.to_wgs84.transform(self.x[idx], self.y[idx])
+        timestamp = point.time.isoformat(sep=" ", timespec="seconds") if point.time else "brak czasu"
+        elevation = f"{point.elevation:.1f} m" if point.elevation is not None else "brak wysokości"
+        return (
+            f"#{idx}\n"
+            f"czas: {timestamp}\n"
+            f"wys.: {elevation}\n"
+            f"lat: {lat:.6f}\n"
+            f"lon: {lon:.6f}"
+        )
+
+    def _format_point_time_text(self, idx):
+        if not (0 <= idx < len(self.point_metadata)):
+            return ""
+        point = self.point_metadata[idx]
+        timestamp = point.time.isoformat(sep=" ", timespec="seconds") if point.time else "brak czasu"
+        segment_elapsed = "brak czasu"
+        start_time = None
+        for candidate in self.point_metadata:
+            if getattr(candidate, "time", None) is not None:
+                start_time = candidate.time
+                break
+        if start_time is not None and point.time is not None:
+            segment_elapsed = self.format_duration(point.time - start_time)
+        return f"#{idx}\nglobalny: {timestamp}\nsciezka: {segment_elapsed}"
+
+    def _update_hover_annotation(self):
+        if self.hover_annotation is None:
+            return
+        if self.hover_idx is None or not (0 <= self.hover_idx < self.x.size):
+            self.hover_annotation.set_visible(False)
+            return
+        self.hover_annotation.xy = (self.x[self.hover_idx], self.y[self.hover_idx])
+        self.hover_annotation.set_text(self._format_point_time_text(self.hover_idx))
+        self.hover_annotation.set_visible(True)
 
     def _nearest_index(self, x0, y0):
         if self.x.size == 0:
@@ -363,7 +461,14 @@ class GPXEditor:
         if not self.selected:
             print("ℹ️ Brak zaznaczenia.")
             return
-        lines = []
+        duration_text = self.format_duration(self.get_track_duration())
+        lines = [
+            f"Punkty: {int(self.x.size)}",
+            f"Czas trwania: {duration_text}",
+        ]
+        if self.selected:
+            lines.append("")
+            lines.append(f"Zaznaczenie: {len(self.selected)} pkt")
         for idx in sorted(self.selected):
             if 0 <= idx < self.x.size:
                 lon, lat = self.to_wgs84.transform(self.x[idx], self.y[idx])
@@ -405,6 +510,7 @@ class GPXEditor:
         self._push_undo()
         self.x = self.x[n:]
         self.y = self.y[n:]
+        self.point_metadata = self.point_metadata[n:]
         # przesuń selekcję
         self.selected = {i - n for i in self.selected if i - n >= 0}
         self.kdtree = KDTree(np.c_[self.x, self.y]) if KDTree is not None else None
@@ -421,6 +527,7 @@ class GPXEditor:
         self._push_undo()
         self.x = self.x[:-n]
         self.y = self.y[:-n]
+        self.point_metadata = self.point_metadata[:-n]
         self.selected = {i for i in self.selected if i < self.x.size}
         self.kdtree = KDTree(np.c_[self.x, self.y]) if KDTree is not None else None
         self._update_plot(full=True)
@@ -437,6 +544,7 @@ class GPXEditor:
         removed = len(idxs)
         self.x = self.x[mask]
         self.y = self.y[mask]
+        self.point_metadata = [p for i, p in enumerate(self.point_metadata) if mask[i]]
         self.selected.clear()
         self.kdtree = KDTree(np.c_[self.x, self.y]) if KDTree is not None else None
         self._update_plot(full=True)
@@ -481,6 +589,11 @@ class GPXEditor:
             self.press_on_selected = idx in self.selected
 
     def _on_motion(self, event):
+        if event.inaxes != self.ax and self.hover_idx is not None:
+            self.hover_idx = None
+            self._update_plot()
+            return
+
         # pan PPM
         if event.button == MouseButton.RIGHT and self.last_canvas_xy and event.x is not None and event.y is not None:
             last_x, last_y = self.last_canvas_xy
@@ -540,7 +653,6 @@ class GPXEditor:
         self.press_key = None
         self.press_canvas_xy = None
         self.press_on_selected = False
-        self.hover_idx = None
         if self.gpx_loaded and self.x.size:
             self.kdtree = KDTree(np.c_[self.x, self.y]) if KDTree is not None else None
 
@@ -633,6 +745,7 @@ class GPXEditor:
             self.track_line = None
             self.scatter = None
             self.basemap_artist = None
+            self.hover_annotation = None
 
         # Podkład
         if self.basemap_enabled:
@@ -684,6 +797,20 @@ class GPXEditor:
                 self.canvas.draw_idle()
 
 
+        if self.hover_annotation is None:
+            self.hover_annotation = self.ax.annotate(
+                "",
+                xy=(0, 0),
+                xytext=(12, 12),
+                textcoords="offset points",
+                fontsize=9,
+                color="black",
+                bbox=dict(boxstyle="round", facecolor="white", alpha=0.9, edgecolor="gray"),
+                arrowprops=dict(arrowstyle="->", color="gray", lw=0.8),
+                zorder=6,
+            )
+        self._update_hover_annotation()
+
         # info box – odtwórz box po clear()
         if full and self.info_text not in self.ax_info.texts:
             self.info_text = self.ax_info.text(
@@ -696,15 +823,22 @@ class GPXEditor:
         self.fig.canvas.draw_idle()
 
     def _update_info_text(self):
-        if not (self.gpx_loaded and self.selected and self.segment and self.segment.points):
+        if not self.gpx_loaded:
             self.info_text.set_text("")
             self.fig.canvas.draw_idle()
             return
 
-        lines = []
+        duration_text = self.format_duration(self.get_track_duration())
+        lines = [
+            f"Punkty: {int(self.x.size)}",
+            f"Czas trwania: {duration_text}",
+        ]
+        if self.selected:
+            lines.append("")
+            lines.append(f"Zaznaczenie: {len(self.selected)} pkt")
         for idx in sorted(self.selected):
-            if 0 <= idx < len(self.segment.points):
-                p = self.segment.points[idx]
+            if 0 <= idx < len(self.point_metadata):
+                p = self.point_metadata[idx]
                 t = p.time.isoformat() if p.time else "—"
                 ele = f"{p.elevation:.1f} m" if p.elevation is not None else "—"
                 # lat/lon po aktualnej edycji
@@ -771,8 +905,7 @@ class MainWindow(QtWidgets.QMainWindow):
         figure = Figure(figsize=(12, 8), facecolor="#ffffff")
         canvas = FigureCanvas(figure)
 
-        ax = figure.add_subplot(111)
-        self.editor = GPXEditor(figure, ax, canvas)
+        self.editor = GPXEditor(figure, None, canvas)
 
         self._build_toolbar()
 
@@ -917,10 +1050,11 @@ class MainWindow(QtWidgets.QMainWindow):
     def _update_status_bar(self):
         total_points = int(self.editor.x.size)
         selected_points = len(self.editor.selected)
+        duration_text = self.editor.format_duration(self.editor.get_track_duration())
         shortcuts = "Scroll=zoom | PPM=pan | Del=usuń | Ctrl+Z/Y=undo/redo | R=reset | M=mapa"
         self._status_label.setText(
             f"Mode: {self._selection_mode} | Points: {total_points} | "
-            f"Selected: {selected_points} | {shortcuts}"
+            f"Selected: {selected_points} | Time: {duration_text} | {shortcuts}"
         )
 
     def _set_selection_mode(self, mode):
