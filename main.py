@@ -21,6 +21,8 @@ import os
 import atexit
 import webbrowser
 import ctypes
+import subprocess
+import tempfile
 
 import numpy as np
 import gpxpy
@@ -231,6 +233,102 @@ class GPXEditor:
         else:
             print("❌ Save cancelled.")
 
+    def save_simple_gpx_oneline(self):
+        """Save GPX simplified: minimal format, 1 point = 1 line"""
+        if not self.gpx_loaded:
+            print("⚠️ Open a GPX file first")
+            return
+
+        lons, lats = self.to_wgs84.transform(self.x, self.y)
+
+        lines = [
+            '<gpx>',
+            '<trk>',
+            '<trkseg>',
+            '',  # empty line
+        ]
+        
+        for i, (lon, lat) in enumerate(zip(lons, lats)):
+            time_str = ""
+            if i < len(self.point_metadata):
+                p = self.point_metadata[i]
+                if p.time:
+                    time_str = f"<time>{p.time.isoformat()}</time>"
+            
+            # Format: <trkpt lat="..." lon="..."><time>...</time></trkpt>
+            if time_str:
+                lines.append(f'<trkpt lat="{lat}" lon="{lon}">{time_str}</trkpt>')
+            else:
+                lines.append(f'<trkpt lat="{lat}" lon="{lon}"/>')
+
+        lines.extend([
+            '',  # empty line
+            '</trkseg>',
+            '</trk>',
+            '</gpx>',
+        ])
+
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            None,
+            "Save simple GPX (one line per point) as...",
+            "simple_oneline.gpx",
+            "GPX files (*.gpx)",
+        )
+        if path:
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(lines))
+            print("💾 Simple GPX (one line per point) saved as:", path)
+        else:
+            print("❌ Save cancelled.")
+
+    def save_simple_gpx(self):
+        """Save GPX with only basic data: lat, lon, time"""
+        if not self.gpx_loaded:
+            print("⚠️ Open a GPX file first")
+            return
+
+        lons, lats = self.to_wgs84.transform(self.x, self.y)
+
+        # Build XML manually for simplified format
+        xml_lines = [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<gpx version="1.1" creator="GPXEditor">',
+            '  <trk>',
+            '    <trkseg>',
+        ]
+
+        for i, (lon, lat) in enumerate(zip(lons, lats)):
+            time_str = ""
+            if i < len(self.point_metadata):
+                p = self.point_metadata[i]
+                if p.time:
+                    # Format time in ISO 8601 format
+                    time_str = f"<time>{p.time.isoformat()}</time>"
+
+            xml_lines.append(f'      <trkpt lat="{lat}" lon="{lon}">')
+            if time_str:
+                xml_lines.append(f"        {time_str}")
+            xml_lines.append('      </trkpt>')
+
+        xml_lines.extend([
+            '    </trkseg>',
+            '  </trk>',
+            '</gpx>',
+        ])
+
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            None,
+            "Save simple GPX as...",
+            "simple.gpx",
+            "GPX files (*.gpx)",
+        )
+        if path:
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(xml_lines))
+            print("💾 Simple GPX saved as:", path)
+        else:
+            print("❌ Save cancelled.")
+
     # -------------------------- Podkład / folium --------------------------
 
     def toggle_basemap(self):
@@ -265,6 +363,52 @@ class GPXEditor:
         folium.Marker(points[-1], tooltip="End").add_to(m)
         m.save(html_path)
         webbrowser.open("file://" + os.path.abspath(html_path), new=0)
+
+    def open_in_notepad(self):
+        """Open current GPX data in Notepad"""
+        if not self.gpx_loaded:
+            print("⚠️ Open a GPX file first")
+            return
+
+        lons, lats = self.to_wgs84.transform(self.x, self.y)
+
+        # Build XML with current data
+        xml_lines = [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<gpx version="1.1" creator="GPXEditor">',
+            '  <trk>',
+            '    <trkseg>',
+        ]
+
+        for i, (lon, lat) in enumerate(zip(lons, lats)):
+            time_str = ""
+            if i < len(self.point_metadata):
+                p = self.point_metadata[i]
+                if p.time:
+                    time_str = f"<time>{p.time.isoformat()}</time>"
+
+            xml_lines.append(f'      <trkpt lat="{lat}" lon="{lon}">')
+            if time_str:
+                xml_lines.append(f"        {time_str}")
+            xml_lines.append('      </trkpt>')
+
+        xml_lines.extend([
+            '    </trkseg>',
+            '  </trk>',
+            '</gpx>',
+        ])
+
+        # Create temporary file
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.gpx', delete=False, encoding='utf-8') as f:
+                temp_path = f.name
+                f.write('\n'.join(xml_lines))
+            
+            # Open in Notepad
+            subprocess.Popen(['notepad.exe', temp_path])
+            print(f"📝 Opened in Notepad: {temp_path}")
+        except Exception as e:
+            print(f"❌ Error opening in Notepad: {e}")
 
     # -------------------------- Edycja / selekcja --------------------------
 
@@ -400,7 +544,6 @@ class GPXEditor:
 
     def _on_rect_select(self, eclick, erelease):
         if eclick.xdata is None or eclick.ydata is None or erelease.xdata is None or erelease.ydata is None:
-            self._deactivate_selectors()
             return
         x0, x1 = sorted([eclick.xdata, erelease.xdata])
         y0, y1 = sorted([eclick.ydata, erelease.ydata])
@@ -412,7 +555,6 @@ class GPXEditor:
             print(f"🔲 Selected {len(idxs)} points (rectangle)")
             self._update_plot()
             self._update_info_text()
-        self._deactivate_selectors()
 
     # ---- lasso ----
     def activate_lasso_selection(self):
@@ -422,7 +564,6 @@ class GPXEditor:
 
     def _on_lasso_select(self, verts):
         if not verts:
-            self._deactivate_selectors()
             return
         # verts są w koord. ekranu — przelicz do danych
         poly_data = self.ax.transData.inverted().transform(verts)
@@ -436,7 +577,6 @@ class GPXEditor:
             print(f"✏️ Selected {len(idxs)} points (lasso)")
             self._update_plot()
             self._update_info_text()
-        self._deactivate_selectors()
 
     def _deactivate_selectors(self):
         if self.rect_selector is not None:
@@ -625,8 +765,9 @@ class GPXEditor:
             dx_px = event.x - self.press_canvas_xy[0]
             dy_px = event.y - self.press_canvas_xy[1]
             if (dx_px * dx_px + dy_px * dy_px) >= 16:  # 4px próg
-                self._apply_selection_click(self.press_idx, self.press_key)
-                if self.press_idx in self.selected:
+                if not self.press_on_selected or self.press_key in ('shift', 'control'):
+                    self._apply_selection_click(self.press_idx, self.press_key)
+                if self.selected:
                     self.dragged = True
                     self.drag_origin = (event.xdata, event.ydata)
                     self._push_undo()
@@ -946,8 +1087,11 @@ class MainWindow(QtWidgets.QMainWindow):
         btn_open.clicked.connect(self.editor.load_gpx)
         btn_save = QtWidgets.QPushButton("Save…")
         btn_save.clicked.connect(self.editor.save_gpx)
+        btn_save_simple_oneline = QtWidgets.QPushButton("Save simple (1 line/point)")
+        btn_save_simple_oneline.clicked.connect(self.editor.save_simple_gpx_oneline)
         group_file_layout.addWidget(btn_open)
         group_file_layout.addWidget(btn_save)
+        group_file_layout.addWidget(btn_save_simple_oneline)
 
         group_delete = QtWidgets.QGroupBox("Delete points")
         group_delete_layout = QtWidgets.QVBoxLayout(group_delete)
@@ -1000,9 +1144,12 @@ class MainWindow(QtWidgets.QMainWindow):
         btn_copy.clicked.connect(self.editor.copy_selected_coords)
         btn_preview = QtWidgets.QPushButton("Open in browser")
         btn_preview.clicked.connect(lambda: self.editor.show_map())
+        btn_notepad = QtWidgets.QPushButton("Open in Notepad")
+        btn_notepad.clicked.connect(self.editor.open_in_notepad)
         group_view_layout.addWidget(btn_reset_view)
         group_view_layout.addWidget(btn_copy)
         group_view_layout.addWidget(btn_preview)
+        group_view_layout.addWidget(btn_notepad)
 
         left_layout.addWidget(group_file)
         left_layout.addWidget(group_delete)
