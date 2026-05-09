@@ -94,19 +94,10 @@ class GPXEditor:
         self.fig = fig
         self.canvas = canvas
         
-        # Clear the figure and set up axes
+        # Clear the figure and use the full canvas for the map view.
         self.fig.clear()
-        gs = self.fig.add_gridspec(1, 2, width_ratios=[3.5, 1.0])
-        self.ax = self.fig.add_subplot(gs[0, 0])
-        self.ax_info = self.fig.add_subplot(gs[0, 1])
-        self.ax_info.axis("off")
-        self.fig.subplots_adjust(bottom=0.22, left=0.05, right=0.98, wspace=0.02)
-        self.info_text = self.ax_info.text(
-            0.02, 0.98, '', transform=self.ax_info.transAxes, va='top',
-            fontsize=10, color='black',
-            bbox=dict(facecolor='white', alpha=0.7, edgecolor='lightgray')
-        )
-        self.info_text.set_visible(False)
+        self.ax = self.fig.add_subplot(111)
+        self.fig.subplots_adjust(bottom=0.08, left=0.04, right=0.995, top=0.985)
         self.hover_annotation = self.ax.annotate(
             "",
             xy=(0, 0),
@@ -607,8 +598,12 @@ class GPXEditor:
             if dx or dy:
                 x0, x1 = self.ax.get_xlim()
                 y0, y1 = self.ax.get_ylim()
-                self.ax.set_xlim(x0 - dx, x1 - dx)
-                self.ax.set_ylim(y0 - dy, y1 - dy)
+                new_xlim = (x0 - dx, x1 - dx)
+                new_ylim = (y0 - dy, y1 - dy)
+                self.xlim_current = new_xlim
+                self.ylim_current = new_ylim
+                self.ax.set_xlim(*new_xlim)
+                self.ax.set_ylim(*new_ylim)
             self.last_canvas_xy = (event.x, event.y)
             self.fig.canvas.draw_idle()
             return
@@ -812,17 +807,11 @@ class GPXEditor:
         self._update_hover_annotation()
 
         # info box – odtwórz box po clear()
-        if full and self.info_text not in self.ax_info.texts:
-            self.info_text = self.ax_info.text(
-                0.02, 0.98, self.info_text.get_text(),
-                transform=self.ax_info.transAxes, va='top',
-                fontsize=10, color='black',
-                bbox=dict(facecolor='white', alpha=0.7, edgecolor='lightgray')
-            )
         self._set_title()
         self.fig.canvas.draw_idle()
 
     def _update_info_text(self):
+        return
         if not self.gpx_loaded:
             self.info_text.set_text("")
             self.fig.canvas.draw_idle()
@@ -852,7 +841,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("GPXEditor — by surfplorer")
-        self.resize(1400, 900)
+        self.resize(1560, 940)
         self._selection_mode = "Single point"
         self._apply_theme()
         self._build_ui()
@@ -899,8 +888,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def _build_ui(self):
         central = QtWidgets.QWidget()
         layout = QtWidgets.QHBoxLayout(central)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(12)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
 
         figure = Figure(figsize=(12, 8), facecolor="#ffffff")
         canvas = FigureCanvas(figure)
@@ -913,7 +902,7 @@ class MainWindow(QtWidgets.QMainWindow):
         left_layout = QtWidgets.QVBoxLayout(left_panel)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(10)
-        left_panel.setFixedWidth(260)
+        left_panel.setFixedWidth(230)
 
         group_file = QtWidgets.QGroupBox("File")
         group_file_layout = QtWidgets.QVBoxLayout(group_file)
