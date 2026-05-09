@@ -1,15 +1,22 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 block_cipher = None
+
+rasterio_hiddenimports = collect_submodules('rasterio')
+rasterio_datas = collect_data_files('rasterio')
+
+# Include the application icon so Qt can load it at runtime from the bundled package.
+app_icon = [('GPXEditor_icon.ico', '.')]
 
 
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[],
-    hiddenimports=['rasterio.sample'],
+    datas=app_icon + rasterio_datas,
+    hiddenimports=rasterio_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -41,4 +48,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon='GPXEditor_icon.ico',
 )

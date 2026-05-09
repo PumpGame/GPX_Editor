@@ -20,6 +20,7 @@ import sys
 import os
 import atexit
 import webbrowser
+import ctypes
 
 import numpy as np
 import gpxpy
@@ -28,7 +29,7 @@ import folium
 import contextily as ctx
 from pyproj import Transformer
 
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
@@ -40,6 +41,10 @@ try:
     from scipy.spatial import cKDTree as KDTree
 except Exception:
     KDTree = None
+
+
+APP_ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "GPXEditor_icon.ico")
+WINDOWS_APP_ID = "surfplorer.GPXEditor"
 
 
 class GPXEditor:
@@ -841,6 +846,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("GPXEditor — by surfplorer")
+        if os.path.exists(APP_ICON_PATH):
+            self.setWindowIcon(QtGui.QIcon(APP_ICON_PATH))
         self.resize(1560, 940)
         self._selection_mode = "Single point"
         self._apply_theme()
@@ -1095,8 +1102,15 @@ def cleanup():
 
 
 if __name__ == "__main__":
+    if os.name == "nt":
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(WINDOWS_APP_ID)
+        except Exception:
+            pass
     app = QtWidgets.QApplication(sys.argv)
     app.setApplicationName("GPXEditor")
+    if os.path.exists(APP_ICON_PATH):
+        app.setWindowIcon(QtGui.QIcon(APP_ICON_PATH))
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
