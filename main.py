@@ -139,7 +139,7 @@ class GPXEditor:
     def load_gpx(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
             None,
-            "Otwórz GPX",
+            "Open GPX",
             "",
             "GPX files (*.gpx)",
         )
@@ -161,7 +161,7 @@ class GPXEditor:
                     best_track = tr
 
         if not best_seg or best_len < 2:
-            print("❌ GPX nie zawiera odpowiedniego segmentu.")
+            print("❌ GPX does not contain a valid segment.")
             return
 
         self.track = best_track
@@ -189,11 +189,11 @@ class GPXEditor:
 
         self._update_plot(full=True)
         self._update_info_text()
-        print(f"✅ Załadowano: {path} | punkty: {len(self.x)}")
+        print(f"✅ Loaded: {path} | points: {len(self.x)}")
 
     def save_gpx(self):
         if not self.gpx_loaded:
-            print("⚠️ Najpierw otwórz plik GPX")
+            print("⚠️ Open a GPX file first")
             return
 
         lons, lats = self.to_wgs84.transform(self.x, self.y)
@@ -215,23 +215,23 @@ class GPXEditor:
 
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
             None,
-            "Zapisz jako...",
+            "Save as...",
             "edited.gpx",
             "GPX files (*.gpx)",
         )
         if path:
             with open(path, 'w', encoding='utf-8') as f:
                 f.write(self.gpx.to_xml())
-            print("💾 Zapisano jako:", path)
+            print("💾 Saved as:", path)
         else:
-            print("❌ Zapis anulowany.")
+            print("❌ Save cancelled.")
 
     # -------------------------- Podkład / folium --------------------------
 
     def toggle_basemap(self):
         self.basemap_enabled = not self.basemap_enabled
         self._update_plot(full=True)
-        print(f"🗺️ Podkład: {'ON' if self.basemap_enabled else 'OFF'}")
+        print(f"🗺️ Basemap: {'ON' if self.basemap_enabled else 'OFF'}")
 
     def _ensure_basemap(self):
         if not self.basemap_enabled or self.basemap_loaded or self.x.size == 0:
@@ -245,7 +245,7 @@ class GPXEditor:
             )
             self.basemap_loaded = True
         except Exception as e:
-            print("❌ Błąd ładowania mapy:", e)
+            print("❌ Failed to load map:", e)
             self.basemap_enabled = False
 
     def show_map(self, html_path="temp_map.html"):
@@ -257,7 +257,7 @@ class GPXEditor:
         m = folium.Map(location=center, zoom_start=14)
         folium.PolyLine(points, weight=4).add_to(m)
         folium.Marker(points[0], tooltip="Start").add_to(m)
-        folium.Marker(points[-1], tooltip="Koniec").add_to(m)
+        folium.Marker(points[-1], tooltip="End").add_to(m)
         m.save(html_path)
         webbrowser.open("file://" + os.path.abspath(html_path), new=0)
 
@@ -322,7 +322,7 @@ class GPXEditor:
     @staticmethod
     def format_duration(duration):
         if duration is None:
-            return "brak danych"
+            return "no data"
         total_seconds = int(duration.total_seconds())
         hours, remainder = divmod(total_seconds, 3600)
         minutes, seconds = divmod(remainder, 60)
@@ -337,12 +337,12 @@ class GPXEditor:
             return ""
         point = self.point_metadata[idx]
         lon, lat = self.to_wgs84.transform(self.x[idx], self.y[idx])
-        timestamp = point.time.isoformat(sep=" ", timespec="seconds") if point.time else "brak czasu"
-        elevation = f"{point.elevation:.1f} m" if point.elevation is not None else "brak wysokości"
+        timestamp = point.time.isoformat(sep=" ", timespec="seconds") if point.time else "no timestamp"
+        elevation = f"{point.elevation:.1f} m" if point.elevation is not None else "no elevation"
         return (
             f"#{idx}\n"
-            f"czas: {timestamp}\n"
-            f"wys.: {elevation}\n"
+            f"time: {timestamp}\n"
+            f"elev: {elevation}\n"
             f"lat: {lat:.6f}\n"
             f"lon: {lon:.6f}"
         )
@@ -351,8 +351,8 @@ class GPXEditor:
         if not (0 <= idx < len(self.point_metadata)):
             return ""
         point = self.point_metadata[idx]
-        timestamp = point.time.isoformat(sep=" ", timespec="seconds") if point.time else "brak czasu"
-        segment_elapsed = "brak czasu"
+        timestamp = point.time.isoformat(sep=" ", timespec="seconds") if point.time else "no timestamp"
+        segment_elapsed = "no timestamp"
         start_time = None
         for candidate in self.point_metadata:
             if getattr(candidate, "time", None) is not None:
@@ -360,7 +360,7 @@ class GPXEditor:
                 break
         if start_time is not None and point.time is not None:
             segment_elapsed = self.format_duration(point.time - start_time)
-        return f"#{idx}\nglobalny: {timestamp}\nsciezka: {segment_elapsed}"
+        return f"#{idx}\nglobal: {timestamp}\ntrack: {segment_elapsed}"
 
     def _update_hover_annotation(self):
         if self.hover_annotation is None:
@@ -391,7 +391,7 @@ class GPXEditor:
             self.ax, self._on_rect_select, useblit=True,
             button=[1], minspanx=5, minspany=5, spancoords='pixels', interactive=False
         )
-        print("🔲 Tryb: prostokąt (kliknij i przeciągnij)")
+        print("🔲 Mode: rectangle selection (click and drag)")
 
     def _on_rect_select(self, eclick, erelease):
         if eclick.xdata is None or eclick.ydata is None or erelease.xdata is None or erelease.ydata is None:
@@ -404,7 +404,7 @@ class GPXEditor:
         if idxs:
             self._push_undo()
             self.selected.update(idxs)
-            print(f"🔲 Zaznaczono {len(idxs)} punktów (prostokąt)")
+            print(f"🔲 Selected {len(idxs)} points (rectangle)")
             self._update_plot()
             self._update_info_text()
         self._deactivate_selectors()
@@ -413,7 +413,7 @@ class GPXEditor:
     def activate_lasso_selection(self):
         self._deactivate_selectors()
         self.lasso_selector = LassoSelector(self.ax, onselect=self._on_lasso_select)
-        print("✏️ Tryb: lasso (rysuj kształt dookoła punktów)")
+        print("✏️ Mode: lasso selection (draw around points)")
 
     def _on_lasso_select(self, verts):
         if not verts:
@@ -428,7 +428,7 @@ class GPXEditor:
         if idxs:
             self._push_undo()
             self.selected.update(idxs)
-            print(f"✏️ Zaznaczono {len(idxs)} punktów (lasso)")
+            print(f"✏️ Selected {len(idxs)} points (lasso)")
             self._update_plot()
             self._update_info_text()
         self._deactivate_selectors()
@@ -450,16 +450,16 @@ class GPXEditor:
     # ---- kopiowanie współrzędnych ----
     def copy_selected_coords(self):
         if not self.selected:
-            print("ℹ️ Brak zaznaczenia.")
+            print("ℹ️ No selection.")
             return
         duration_text = self.format_duration(self.get_track_duration())
         lines = [
-            f"Punkty: {int(self.x.size)}",
-            f"Czas trwania: {duration_text}",
+            f"Points: {int(self.x.size)}",
+            f"Duration: {duration_text}",
         ]
         if self.selected:
             lines.append("")
-            lines.append(f"Zaznaczenie: {len(self.selected)} pkt")
+            lines.append(f"Selection: {len(self.selected)} pts")
         for idx in sorted(self.selected):
             if 0 <= idx < self.x.size:
                 lon, lat = self.to_wgs84.transform(self.x[idx], self.y[idx])
@@ -468,24 +468,24 @@ class GPXEditor:
         try:
             clipboard = self.qt_app.clipboard()
             clipboard.setText(text)
-            print("📋 Skopiowano do schowka:")
+            print("📋 Copied to clipboard:")
             print(text)
         except Exception as e:
-            print("❌ Nie udało się skopiować do schowka:", e)
+            print("❌ Failed to copy to clipboard:", e)
 
     # ---- przycinanie ----
     def _remove_x_from(self, where):
         if self.cut_input is None:
-            print("⚠️ Brak pola X.")
+            print("⚠️ Missing X input field.")
             return
         value = self.cut_input.text().strip()
         try:
             n = int(value)
         except Exception:
-            print("⚠️ Podaj liczbę całkowitą w polu X.")
+            print("⚠️ Enter an integer in the X field.")
             return
         if n <= 0:
-            print("⚠️ X musi być > 0.")
+            print("⚠️ X must be > 0.")
             return
         if where == 'start':
             self.remove_first_n(n)
@@ -507,7 +507,7 @@ class GPXEditor:
         self.kdtree = KDTree(np.c_[self.x, self.y]) if KDTree is not None else None
         self._update_plot(full=True)
         self._update_info_text()
-        print(f"🔻 Usunięto pierwsze {n} punktów")
+        print(f"🔻 Removed the first {n} points")
 
     def remove_last_n(self, n):
         if self.x.size <= 1:
@@ -523,7 +523,7 @@ class GPXEditor:
         self.kdtree = KDTree(np.c_[self.x, self.y]) if KDTree is not None else None
         self._update_plot(full=True)
         self._update_info_text()
-        print(f"🔺 Usunięto ostatnie {n} punktów")
+        print(f"🔺 Removed the last {n} points")
 
     def delete_selected(self):
         if not self.selected:
@@ -540,7 +540,7 @@ class GPXEditor:
         self.kdtree = KDTree(np.c_[self.x, self.y]) if KDTree is not None else None
         self._update_plot(full=True)
         self._update_info_text()
-        print(f"🗑️ Usunięto {removed} punktów")
+        print(f"🗑️ Removed {removed} points")
 
     # -------------------------- Zdarzenia --------------------------
 
@@ -871,6 +871,35 @@ class MainWindow(QtWidgets.QMainWindow):
                 border-radius: 4px;
                 padding: 4px 8px;
             }
+            QRadioButton {
+                spacing: 10px;
+                padding: 8px 10px;
+                border: 1px solid transparent;
+                border-radius: 6px;
+            }
+            QRadioButton:hover {
+                background: #eef2f6;
+                border-color: #d6dbe1;
+            }
+            QRadioButton:checked {
+                background: #dcecff;
+                border-color: #7aa7d9;
+                font-weight: 600;
+            }
+            QRadioButton::indicator {
+                width: 16px;
+                height: 16px;
+            }
+            QRadioButton::indicator:unchecked {
+                border: 2px solid #8fa1b3;
+                border-radius: 8px;
+                background: #ffffff;
+            }
+            QRadioButton::indicator:checked {
+                border: 2px solid #2c6fb7;
+                border-radius: 8px;
+                background: #2c6fb7;
+            }
             QGroupBox {
                 border: 1px solid #d6dbe1;
                 border-radius: 8px;
@@ -906,25 +935,25 @@ class MainWindow(QtWidgets.QMainWindow):
 
         group_file = QtWidgets.QGroupBox("File")
         group_file_layout = QtWidgets.QVBoxLayout(group_file)
-        btn_open = QtWidgets.QPushButton("Otwórz GPX")
+        btn_open = QtWidgets.QPushButton("Open GPX")
         btn_open.clicked.connect(self.editor.load_gpx)
-        btn_save = QtWidgets.QPushButton("Zapisz…")
+        btn_save = QtWidgets.QPushButton("Save…")
         btn_save.clicked.connect(self.editor.save_gpx)
         group_file_layout.addWidget(btn_open)
         group_file_layout.addWidget(btn_save)
 
         group_delete = QtWidgets.QGroupBox("Delete points")
         group_delete_layout = QtWidgets.QVBoxLayout(group_delete)
-        btn_cut_start = QtWidgets.QPushButton("Usuń 1 start")
+        btn_cut_start = QtWidgets.QPushButton("Remove 1 from start")
         btn_cut_start.clicked.connect(lambda: self.editor.remove_first_n(1))
-        btn_cut_end = QtWidgets.QPushButton("Usuń 1 koniec")
+        btn_cut_end = QtWidgets.QPushButton("Remove 1 from end")
         btn_cut_end.clicked.connect(lambda: self.editor.remove_last_n(1))
         cut_input = QtWidgets.QSpinBox()
         cut_input.setRange(1, 999999)
         cut_input.setValue(10)
-        btn_cut_x_start = QtWidgets.QPushButton("Usuń X start")
+        btn_cut_x_start = QtWidgets.QPushButton("Remove X from start")
         btn_cut_x_start.clicked.connect(lambda: self.editor._remove_x_from("start"))
-        btn_cut_x_end = QtWidgets.QPushButton("Usuń X koniec")
+        btn_cut_x_end = QtWidgets.QPushButton("Remove X from end")
         btn_cut_x_end.clicked.connect(lambda: self.editor._remove_x_from("end"))
         group_delete_layout.addWidget(btn_cut_start)
         group_delete_layout.addWidget(btn_cut_end)
@@ -1040,7 +1069,7 @@ class MainWindow(QtWidgets.QMainWindow):
         total_points = int(self.editor.x.size)
         selected_points = len(self.editor.selected)
         duration_text = self.editor.format_duration(self.editor.get_track_duration())
-        shortcuts = "Scroll=zoom | PPM=pan | Del=usuń | Ctrl+Z/Y=undo/redo | R=reset | M=mapa"
+        shortcuts = "Scroll=zoom | RMB=pan | Del=delete | Ctrl+Z/Y=undo/redo | R=reset | M=map"
         self._status_label.setText(
             f"Mode: {self._selection_mode} | Points: {total_points} | "
             f"Selected: {selected_points} | Time: {duration_text} | {shortcuts}"
