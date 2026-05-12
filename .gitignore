@@ -8,3 +8,7 @@ build/
 dist/
 
 temp_map.html
+
+build/
+dist/
+*.pkg
