@@ -170,6 +170,21 @@ class GPXEditor:
         self.rect_selector = None
         self.lasso_selector = None
 
+    def _capture_current_view(self):
+        if self.ax is None or not self.gpx_loaded or self.x.size == 0:
+            return False
+        try:
+            self.xlim_current = tuple(float(v) for v in self.ax.get_xlim())
+            self.ylim_current = tuple(float(v) for v in self.ax.get_ylim())
+            return True
+        except Exception:
+            return False
+
+    def set_freeze_view(self, enabled):
+        self.freeze_view = bool(enabled)
+        if self.freeze_view:
+            self._capture_current_view()
+
     # -------------------------- GPX I/O --------------------------
 
     def load_gpx(self):
@@ -195,6 +210,9 @@ class GPXEditor:
         if not path or not os.path.exists(path):
             print(f"⚠️ File not found: {path}")
             return False
+
+        if self.freeze_view:
+            self._capture_current_view()
 
         try:
             with open(path, 'r', encoding='utf-8') as f:
@@ -238,10 +256,9 @@ class GPXEditor:
         self.basemap_loaded = False
         self.basemap_img = None
         self.basemap_extent = None
-        if not self.freeze_view:
+        if not self.freeze_view or self.xlim_current is None or self.ylim_current is None:
             self.xlim_current = None
             self.ylim_current = None
-        self.freeze_view = False
 
         self._update_plot(full=True)
         self._update_info_text()
@@ -289,10 +306,9 @@ class GPXEditor:
         self.basemap_loaded = False
         self.basemap_img = None
         self.basemap_extent = None
-        if reset_view or not self.freeze_view:
+        if (reset_view and not self.freeze_view) or self.xlim_current is None or self.ylim_current is None:
             self.xlim_current = None
             self.ylim_current = None
-        self.freeze_view = False
 
         self._update_plot(full=True)
         self._update_info_text()
@@ -1154,6 +1170,28 @@ class MainWindow(QtWidgets.QMainWindow):
             QPushButton:pressed {
                 background: #e1e6eb;
             }
+            QPushButton#freezeViewButton {
+                background: #ffffff;
+                border: 2px solid #8fa1b3;
+                border-radius: 8px;
+                color: #1f2933;
+                font-weight: 700;
+                padding: 9px 10px;
+                text-align: left;
+            }
+            QPushButton#freezeViewButton:hover {
+                background: #eef2f6;
+                border-color: #2c6fb7;
+            }
+            QPushButton#freezeViewButton:checked {
+                background: #1f7a4d;
+                border-color: #145c39;
+                color: #ffffff;
+            }
+            QPushButton#freezeViewButton:checked:hover {
+                background: #238a58;
+                border-color: #145c39;
+            }
             QLineEdit, QSpinBox {
                 background: #ffffff;
                 border: 1px solid #d6dbe1;
@@ -1324,6 +1362,13 @@ class MainWindow(QtWidgets.QMainWindow):
         btn_reset_view = QtWidgets.QPushButton("Reset view")
         btn_reset_view.clicked.connect(self.editor._reset_view)
 
+        self.freeze_view_button = QtWidgets.QPushButton("Freeze view: OFF")
+        self.freeze_view_button.setObjectName("freezeViewButton")
+        self.freeze_view_button.setCheckable(True)
+        self.freeze_view_button.setMinimumHeight(42)
+        self.freeze_view_button.setToolTip("Keep current zoom and pan when opening or refreshing GPX files.")
+        self.freeze_view_button.toggled.connect(self._set_freeze_view)
+
         btn_copy = QtWidgets.QPushButton("Copy coordinates")
         btn_copy.clicked.connect(self.editor.copy_selected_coords)
 
@@ -1334,6 +1379,7 @@ class MainWindow(QtWidgets.QMainWindow):
         btn_notepad.clicked.connect(self.editor.open_in_notepad)
 
         group_view_layout.addWidget(btn_reset_view)
+        group_view_layout.addWidget(self.freeze_view_button)
         group_view_layout.addWidget(btn_copy)
         group_view_layout.addWidget(btn_preview)
         group_view_layout.addWidget(btn_notepad)
@@ -1461,10 +1507,11 @@ class MainWindow(QtWidgets.QMainWindow):
         total_points = int(self.editor.x.size)
         selected_points = len(self.editor.selected)
         duration_text = self.editor.format_duration(self.editor.get_track_duration())
+        view_text = "Frozen" if self.editor.freeze_view else "Auto"
         shortcuts = "Scroll=zoom | RMB=pan | Del=delete | Ctrl+Z/Y=undo/redo | R=reset | M=map"
         self._status_label.setText(
             f"Mode: {self._selection_mode} | Points: {total_points} | "
-            f"Selected: {selected_points} | Time: {duration_text} | {shortcuts}"
+            f"Selected: {selected_points} | Time: {duration_text} | View: {view_text} | {shortcuts}"
         )
 
     def _set_selection_mode(self, mode):
@@ -1502,8 +1549,11 @@ class MainWindow(QtWidgets.QMainWindow):
             event.ignore()
 
     def _set_freeze_view(self, state):
-        self.editor.freeze_view = bool(state)
+        self.editor.set_freeze_view(state)
+        if hasattr(self, "freeze_view_button"):
+            self.freeze_view_button.setText(f"Freeze view: {'ON' if self.editor.freeze_view else 'OFF'}")
         print(f"Freeze view: {'ON' if self.editor.freeze_view else 'OFF'}")
+        self._update_status_bar()
 
     def _open_gpx_dialog(self):
         if self.editor.load_gpx():
