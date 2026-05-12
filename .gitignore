@@ -12,3 +12,7 @@ temp_map.html
 build/
 dist/
 *.pkg
+
+build/
+dist/
+*.pkg
