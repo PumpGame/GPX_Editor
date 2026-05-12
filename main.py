@@ -58,20 +58,39 @@ WINDOWS_APP_ID = "surfplorer.GPXEditor"
 
 
 ORIGINAL_PRINT = builtins.print
+PRINT_LISTENERS = []
+
+
+def add_print_listener(callback):
+    if callback not in PRINT_LISTENERS:
+        PRINT_LISTENERS.append(callback)
+
+
+def remove_print_listener(callback):
+    if callback in PRINT_LISTENERS:
+        PRINT_LISTENERS.remove(callback)
 
 
 def safe_print(*args, **kwargs):
+    sep = kwargs.get("sep", " ")
+    end = kwargs.get("end", "\n")
+    file = kwargs.get("file", sys.stdout)
+    message = sep.join(str(arg) for arg in args) + end
     try:
         ORIGINAL_PRINT(*args, **kwargs)
     except UnicodeEncodeError:
-        sep = kwargs.get("sep", " ")
-        end = kwargs.get("end", "\n")
-        file = kwargs.get("file", sys.stdout)
-        message = sep.join(str(arg) for arg in args) + end
         encoding = getattr(file, "encoding", None) or "utf-8"
         file.write(message.encode(encoding, errors="replace").decode(encoding, errors="replace"))
         if kwargs.get("flush"):
             file.flush()
+    if file in (sys.stdout, sys.stderr):
+        for callback in list(PRINT_LISTENERS):
+            try:
+                callback(message)
+            except RuntimeError:
+                remove_print_listener(callback)
+            except Exception:
+                pass
 
 
 print = safe_print
@@ -113,11 +132,13 @@ class GPXEditor:
         self.press_canvas_xy = None
         self.press_on_selected = False
         self.hover_idx = None
+        self.pick_tolerance_m = 2.0
         self.hover_annotation = None
         self.hover_marker = None
         self.track_line = None
         self.scatter = None
         self._last_pan_redraw = 0.0
+        self._selector_disabled_for_drag = None
 
         # --- undo/redo ---
         self._undo = []
@@ -189,6 +210,9 @@ class GPXEditor:
         self.freeze_view = bool(enabled)
         if self.freeze_view:
             self._capture_current_view()
+
+    def set_pick_tolerance(self, meters):
+        self.pick_tolerance_m = max(0.1, float(meters))
 
     # -------------------------- GPX I/O --------------------------
 
@@ -735,6 +759,9 @@ class GPXEditor:
             self._update_plot()
             self._update_info_text()
 
+        elif self.selected and not (getattr(eclick, "key", None) == 'shift' or getattr(eclick, "key", None) == 'control'):
+            self.clear_selection()
+
     # ---- lasso ----
     def activate_lasso_selection(self):
         self._deactivate_selectors()
@@ -761,6 +788,9 @@ class GPXEditor:
             print(f"✏️ Selected {len(idxs)} points (lasso)")
             self._update_plot()
             self._update_info_text()
+
+        elif self.selected:
+            self.clear_selection()
 
     def _deactivate_selectors(self):
         if self.rect_selector is not None:
@@ -877,6 +907,14 @@ class GPXEditor:
         self._update_info_text()
         print(f"🗑️ Removed {removed} points")
 
+    def clear_selection(self):
+        if not self.selected:
+            return
+        self.selected.clear()
+        self._update_plot()
+        self._update_info_text()
+        print("Selection cleared")
+
     # -------------------------- Zdarzenia --------------------------
 
     def _on_press(self, event):
@@ -889,6 +927,19 @@ class GPXEditor:
             return
 
         if self._selection_tool_active() and event.button == MouseButton.LEFT:
+            idx, dist = self._nearest_index(event.xdata, event.ydata)
+            if self.rect_selector is not None and idx is not None and dist is not None and dist <= self.pick_tolerance_m:
+                self.pending_drag = True
+                self.press_idx = idx
+                self.press_key = getattr(event, "key", None)
+                self.press_canvas_xy = (event.x, event.y)
+                self.press_on_selected = idx in self.selected
+                self._selector_disabled_for_drag = self.rect_selector
+                try:
+                    self.rect_selector.set_active(False)
+                except Exception:
+                    pass
+                return
             self.pending_drag = False
             self.press_idx = None
             self.press_key = None
@@ -901,13 +952,10 @@ class GPXEditor:
             idx, dist = self._nearest_index(event.xdata, event.ydata)
             if idx is None:
                 return
-            pick_tol = 12.0  # ~metry w EPSG:3857
-            if dist is None or dist > pick_tol:
+            if dist is None or dist > self.pick_tolerance_m:
                 # klik w puste: wyczyść selekcję (chyba że trzymasz Shift/Ctrl)
-                if not (event.key == 'shift' or event.key == 'control'):
-                    self.selected.clear()
-                    self._update_plot()
-                    self._update_info_text()
+                if not (getattr(event, "key", None) == 'shift' or getattr(event, "key", None) == 'control'):
+                    self.clear_selection()
                 self.pending_drag = False
                 self.press_idx = None
                 self.press_key = None
@@ -956,18 +1004,21 @@ class GPXEditor:
                 self.fig.canvas.draw_idle()
             return
 
-        if self._selection_tool_active():
-            return
-
         if not self.dragged and event.xdata is not None and event.ydata is not None:
             idx, dist = self._nearest_index(event.xdata, event.ydata)
-            pick_tol = 12.0  # ~metry w EPSG:3857
-            new_hover = idx if (dist is not None and dist <= pick_tol) else None
+            new_hover = idx if (dist is not None and dist <= self.pick_tolerance_m) else None
             if new_hover != self.hover_idx:
                 self.hover_idx = new_hover
                 self._refresh_hover_display()
 
-        if self.pending_drag and not self.dragged and event.x is not None and event.y is not None:
+        if self._selection_tool_active() and not (self.pending_drag or self.dragged):
+            return
+
+        if (
+            self.pending_drag and not self.dragged and
+            event.x is not None and event.y is not None and
+            event.xdata is not None and event.ydata is not None
+        ):
             dx_px = event.x - self.press_canvas_xy[0]
             dy_px = event.y - self.press_canvas_xy[1]
             if (dx_px * dx_px + dy_px * dy_px) >= 16:  # 4px próg
@@ -990,21 +1041,14 @@ class GPXEditor:
             self._update_plot()
 
     def _on_release(self, event):
-        if self._selection_tool_active():
-            self.dragged = False
-            self.drag_origin = None
-            self.last_canvas_xy = None
-            self.pending_drag = False
-            self.press_idx = None
-            self.press_key = None
-            self.press_canvas_xy = None
-            self.press_on_selected = False
-            if self.gpx_loaded and self.x.size:
-                self.kdtree = KDTree(np.c_[self.x, self.y]) if KDTree is not None else None
-            return
-
         if self.pending_drag and not self.dragged and self.press_idx is not None:
             self._apply_selection_click(self.press_idx, self.press_key)
+        if self._selector_disabled_for_drag is not None:
+            try:
+                self._selector_disabled_for_drag.set_active(True)
+            except Exception:
+                pass
+            self._selector_disabled_for_drag = None
         self.dragged = False
         self.drag_origin = None
         self.last_canvas_xy = None
@@ -1015,6 +1059,8 @@ class GPXEditor:
         self.press_on_selected = False
         if self.gpx_loaded and self.x.size:
             self.kdtree = KDTree(np.c_[self.x, self.y]) if KDTree is not None else None
+        if self._selection_tool_active():
+            return
 
     def _on_scroll(self, event):
         if event.xdata is None or event.ydata is None:
@@ -1280,6 +1326,8 @@ class GPXEditor:
 
 
 class MainWindow(QtWidgets.QMainWindow):
+    terminal_log_signal = QtCore.Signal(str)
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("GPXEditor — by surfplorer")
@@ -1289,8 +1337,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setAcceptDrops(True)
         self._selection_mode = "Single point"
         self.scripts_dir = None
+        self.project_dir = os.path.dirname(os.path.abspath(__file__))
+        self.terminal_cwd = self.project_dir
+        self.terminal_process = None
+        self._print_listener = None
+        self.terminal_log_signal.connect(self._append_terminal_log)
         self._apply_theme()
         self._build_ui()
+        self._print_listener = lambda message: self.terminal_log_signal.emit(message)
+        add_print_listener(self._print_listener)
+        self._append_terminal_log(f"Terminal ready: {self.terminal_cwd}")
 
     def _apply_theme(self):
         self.setStyleSheet(
@@ -1302,8 +1358,8 @@ class MainWindow(QtWidgets.QMainWindow):
             QPushButton {
                 background: #ffffff;
                 border: 1px solid #d6dbe1;
-                border-radius: 6px;
-                padding: 6px 10px;
+                border-radius: 4px;
+                padding: 4px 7px;
             }
             QPushButton:hover {
                 background: #eef2f6;
@@ -1314,10 +1370,10 @@ class MainWindow(QtWidgets.QMainWindow):
             QPushButton#freezeViewButton {
                 background: #ffffff;
                 border: 2px solid #8fa1b3;
-                border-radius: 8px;
+                border-radius: 6px;
                 color: #1f2933;
                 font-weight: 700;
-                padding: 9px 10px;
+                padding: 5px 8px;
                 text-align: left;
             }
             QPushButton#freezeViewButton:hover {
@@ -1333,17 +1389,33 @@ class MainWindow(QtWidgets.QMainWindow):
                 background: #238a58;
                 border-color: #145c39;
             }
-            QLineEdit, QSpinBox {
+            QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
                 background: #ffffff;
                 border: 1px solid #d6dbe1;
                 border-radius: 4px;
-                padding: 4px 8px;
+                padding: 3px 6px;
+            }
+            QPlainTextEdit#terminalOutput {
+                background: #ffffff;
+                color: #1f2933;
+                border: 1px solid #d6dbe1;
+                border-radius: 6px;
+                padding: 6px;
+                font-family: Consolas, "Cascadia Mono", monospace;
+                font-size: 10pt;
+            }
+            QLineEdit#terminalInput {
+                background: #ffffff;
+                border: 1px solid #94a3b8;
+                border-radius: 4px;
+                padding: 3px 6px;
+                font-family: Consolas, "Cascadia Mono", monospace;
             }
             QRadioButton {
-                spacing: 10px;
-                padding: 8px 10px;
+                spacing: 7px;
+                padding: 4px 7px;
                 border: 1px solid transparent;
-                border-radius: 6px;
+                border-radius: 4px;
             }
             QRadioButton:hover {
                 background: #eef2f6;
@@ -1355,8 +1427,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 font-weight: 600;
             }
             QRadioButton::indicator {
-                width: 16px;
-                height: 16px;
+                width: 13px;
+                height: 13px;
             }
             QRadioButton::indicator:unchecked {
                 border: 2px solid #8fa1b3;
@@ -1370,9 +1442,9 @@ class MainWindow(QtWidgets.QMainWindow):
             }
             QGroupBox {
                 border: 1px solid #d6dbe1;
-                border-radius: 8px;
-                margin-top: 10px;
-                padding: 6px;
+                border-radius: 6px;
+                margin-top: 8px;
+                padding: 4px;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
@@ -1402,12 +1474,13 @@ class MainWindow(QtWidgets.QMainWindow):
         left_panel = QtWidgets.QWidget()
         left_layout = QtWidgets.QVBoxLayout(left_panel)
         left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(10)
+        left_layout.setSpacing(6)
         left_panel.setFixedWidth(230)
 
         # ---------- File ----------
         group_file = QtWidgets.QGroupBox("File")
         group_file_layout = QtWidgets.QVBoxLayout(group_file)
+        group_file_layout.setSpacing(4)
 
         btn_open = QtWidgets.QPushButton("Open GPX")
         btn_open.clicked.connect(self._open_gpx_dialog)
@@ -1436,6 +1509,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # ---------- Delete points ----------
         group_delete = QtWidgets.QGroupBox("Delete points")
         group_delete_layout = QtWidgets.QVBoxLayout(group_delete)
+        group_delete_layout.setSpacing(4)
 
         btn_cut_start = QtWidgets.QPushButton("Remove 1 from start")
         btn_cut_start.clicked.connect(lambda: self.editor.remove_first_n(1))
@@ -1463,6 +1537,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # ---------- Selection mode ----------
         group_selection = QtWidgets.QGroupBox("Selection mode")
         group_selection_layout = QtWidgets.QVBoxLayout(group_selection)
+        group_selection_layout.setSpacing(4)
 
         radio_single = QtWidgets.QRadioButton("Single point")
         radio_rect = QtWidgets.QRadioButton("Rectangle")
@@ -1483,15 +1558,28 @@ class MainWindow(QtWidgets.QMainWindow):
         group_selection_layout.addWidget(radio_rect)
         group_selection_layout.addWidget(radio_lasso)
 
+        self.pick_tolerance_input = QtWidgets.QDoubleSpinBox()
+        self.pick_tolerance_input.setRange(0.1, 1000.0)
+        self.pick_tolerance_input.setDecimals(1)
+        self.pick_tolerance_input.setSingleStep(1.0)
+        self.pick_tolerance_input.setValue(self.editor.pick_tolerance_m)
+        self.pick_tolerance_input.setSuffix(" m")
+        self.pick_tolerance_input.setToolTip("Distance from cursor to point required for single-point selection and hover.")
+        self.pick_tolerance_input.valueChanged.connect(self._set_pick_tolerance)
+
+        group_selection_layout.addWidget(QtWidgets.QLabel("Point pick radius:"))
+        group_selection_layout.addWidget(self.pick_tolerance_input)
+
         # ---------- Selection edit ----------
         group_selection_edit = QtWidgets.QGroupBox("Selection edit")
         group_selection_edit_layout = QtWidgets.QVBoxLayout(group_selection_edit)
+        group_selection_edit_layout.setSpacing(4)
 
         btn_delete_selected = QtWidgets.QPushButton("Delete selected")
         btn_delete_selected.clicked.connect(self.editor.delete_selected)
 
         btn_clear_selection = QtWidgets.QPushButton("Clear selection")
-        btn_clear_selection.setEnabled(False)
+        btn_clear_selection.clicked.connect(self._clear_selection)
 
         group_selection_edit_layout.addWidget(btn_delete_selected)
         group_selection_edit_layout.addWidget(btn_clear_selection)
@@ -1499,6 +1587,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # ---------- View / tools ----------
         group_view = QtWidgets.QGroupBox("View / tools")
         group_view_layout = QtWidgets.QVBoxLayout(group_view)
+        group_view_layout.setSpacing(4)
 
         btn_reset_view = QtWidgets.QPushButton("Reset view")
         btn_reset_view.clicked.connect(self.editor._reset_view)
@@ -1506,7 +1595,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.freeze_view_button = QtWidgets.QPushButton("Freeze view: OFF")
         self.freeze_view_button.setObjectName("freezeViewButton")
         self.freeze_view_button.setCheckable(True)
-        self.freeze_view_button.setMinimumHeight(42)
+        self.freeze_view_button.setMinimumHeight(32)
         self.freeze_view_button.setToolTip("Keep current zoom and pan when opening or refreshing GPX files.")
         self.freeze_view_button.toggled.connect(self._set_freeze_view)
 
@@ -1551,11 +1640,12 @@ class MainWindow(QtWidgets.QMainWindow):
         right_panel = QtWidgets.QWidget()
         right_layout = QtWidgets.QVBoxLayout(right_panel)
         right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(10)
-        right_panel.setFixedWidth(230)
+        right_layout.setSpacing(6)
+        right_panel.setFixedWidth(360)
 
         group_scripts = QtWidgets.QGroupBox("Custom Scripts")
         group_scripts_layout = QtWidgets.QVBoxLayout(group_scripts)
+        group_scripts_layout.setSpacing(4)
 
         btn_select_dir = QtWidgets.QPushButton("Select Scripts Directory")
         btn_select_dir.clicked.connect(self._select_scripts_directory)
@@ -1568,13 +1658,53 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.scripts_container = QtWidgets.QVBoxLayout()
 
+        terminal_header = QtWidgets.QHBoxLayout()
+        terminal_label = QtWidgets.QLabel("Logs / PowerShell")
+        btn_terminal_clear = QtWidgets.QPushButton("Clear")
+        btn_terminal_clear.clicked.connect(self._clear_terminal_log)
+        terminal_header.addWidget(terminal_label)
+        terminal_header.addStretch()
+        terminal_header.addWidget(btn_terminal_clear)
+
+        self.terminal_cwd_label = QtWidgets.QLabel(self.terminal_cwd)
+        self.terminal_cwd_label.setWordWrap(True)
+        self.terminal_cwd_label.setToolTip(self.terminal_cwd)
+
+        self.terminal_output = QtWidgets.QPlainTextEdit()
+        self.terminal_output.setObjectName("terminalOutput")
+        self.terminal_output.setReadOnly(True)
+        self.terminal_output.setLineWrapMode(QtWidgets.QPlainTextEdit.WidgetWidth)
+        self.terminal_output.setMaximumBlockCount(3000)
+        self.terminal_output.setMinimumHeight(260)
+
+        self.terminal_input = QtWidgets.QLineEdit()
+        self.terminal_input.setObjectName("terminalInput")
+        self.terminal_input.setPlaceholderText("PowerShell command...")
+        self.terminal_input.returnPressed.connect(self._run_terminal_command)
+
+        self.terminal_run_btn = QtWidgets.QPushButton("Run")
+        self.terminal_run_btn.clicked.connect(self._run_terminal_command)
+
+        self.terminal_stop_btn = QtWidgets.QPushButton("Stop")
+        self.terminal_stop_btn.setEnabled(False)
+        self.terminal_stop_btn.clicked.connect(self._stop_terminal_command)
+
+        terminal_command_layout = QtWidgets.QHBoxLayout()
+        terminal_command_layout.addWidget(self.terminal_input, stretch=1)
+        terminal_command_layout.addWidget(self.terminal_run_btn)
+        terminal_command_layout.addWidget(self.terminal_stop_btn)
+
         group_scripts_layout.addWidget(btn_select_dir)
         group_scripts_layout.addWidget(btn_scripts_help)
         group_scripts_layout.addWidget(self.scripts_dir_label)
         group_scripts_layout.addLayout(self.scripts_container)
+        group_scripts_layout.addSpacing(8)
+        group_scripts_layout.addLayout(terminal_header)
+        group_scripts_layout.addWidget(self.terminal_cwd_label)
+        group_scripts_layout.addWidget(self.terminal_output, stretch=1)
+        group_scripts_layout.addLayout(terminal_command_layout)
 
-        right_layout.addWidget(group_scripts)
-        right_layout.addStretch()
+        right_layout.addWidget(group_scripts, stretch=1)
 
         # ============================================================
         # FINAL LAYOUT: LEFT | MAP | RIGHT
@@ -1665,6 +1795,15 @@ class MainWindow(QtWidgets.QMainWindow):
             self.editor._deactivate_selectors()
         self._update_status_bar()
 
+    def closeEvent(self, event):
+        if self._print_listener is not None:
+            remove_print_listener(self._print_listener)
+            self._print_listener = None
+        if self.terminal_process and self.terminal_process.state() != QtCore.QProcess.NotRunning:
+            self.terminal_process.kill()
+            self.terminal_process.waitForFinished(1000)
+        super().closeEvent(event)
+
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
             urls = event.mimeData().urls()
@@ -1695,6 +1834,177 @@ class MainWindow(QtWidgets.QMainWindow):
             self.freeze_view_button.setText(f"Freeze view: {'ON' if self.editor.freeze_view else 'OFF'}")
         print(f"Freeze view: {'ON' if self.editor.freeze_view else 'OFF'}")
         self._update_status_bar()
+
+    def _set_pick_tolerance(self, value):
+        self.editor.set_pick_tolerance(value)
+        print(f"Point pick radius: {self.editor.pick_tolerance_m:.1f} m")
+
+    def _clear_selection(self):
+        self.editor.clear_selection()
+        self._update_status_bar()
+
+    def _append_terminal_log(self, text):
+        if not hasattr(self, "terminal_output"):
+            return
+        text = str(text).rstrip("\r\n")
+        if not text:
+            return
+        self.terminal_output.appendPlainText(text)
+        scrollbar = self.terminal_output.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+    def _clear_terminal_log(self):
+        self.terminal_output.clear()
+
+    def _update_terminal_cwd_label(self):
+        if hasattr(self, "terminal_cwd_label"):
+            self.terminal_cwd_label.setText(self.terminal_cwd)
+            self.terminal_cwd_label.setToolTip(self.terminal_cwd)
+
+    def _set_terminal_running(self, running):
+        self.terminal_input.setEnabled(not running)
+        self.terminal_run_btn.setEnabled(not running)
+        self.terminal_stop_btn.setEnabled(running)
+
+    def _terminal_environment(self):
+        env = QtCore.QProcessEnvironment.systemEnvironment()
+        if os.name == "nt":
+            venv_bin = os.path.join(self.project_dir, "venv", "Scripts")
+        else:
+            venv_bin = os.path.join(self.project_dir, "venv", "bin")
+        if os.path.isdir(venv_bin):
+            env.insert("PATH", venv_bin + os.pathsep + env.value("PATH"))
+            env.insert("VIRTUAL_ENV", os.path.join(self.project_dir, "venv"))
+        return env
+
+    def _handle_terminal_cd(self, command):
+        stripped = command.strip()
+        lower = stripped.lower()
+        target = None
+
+        if lower in {"pwd", "get-location"}:
+            self._append_terminal_log(self.terminal_cwd)
+            return True
+        if lower in {"cd", "sl", "set-location"}:
+            self._append_terminal_log(self.terminal_cwd)
+            return True
+        if lower.startswith("cd "):
+            target = stripped[3:].strip()
+        elif lower.startswith("sl "):
+            target = stripped[3:].strip()
+        elif lower.startswith("set-location "):
+            target = stripped[len("set-location "):].strip()
+        else:
+            return False
+
+        target = target.strip().strip("\"'")
+        target = os.path.expanduser(os.path.expandvars(target))
+        if not os.path.isabs(target):
+            target = os.path.abspath(os.path.join(self.terminal_cwd, target))
+
+        if os.path.isdir(target):
+            self.terminal_cwd = target
+            self._update_terminal_cwd_label()
+            self._append_terminal_log(self.terminal_cwd)
+        else:
+            self._append_terminal_log(f"Path not found: {target}")
+        return True
+
+    def _run_terminal_command(self):
+        command = self.terminal_input.text().strip()
+        if not command:
+            return
+        if self.terminal_process and self.terminal_process.state() != QtCore.QProcess.NotRunning:
+            self._append_terminal_log("A command is already running. Stop it before starting another one.")
+            return
+
+        self.terminal_input.clear()
+        prompt = f"PS {self.terminal_cwd}> {command}"
+
+        if command.lower() in {"clear", "cls"}:
+            self.terminal_output.clear()
+            self._append_terminal_log(prompt)
+            return
+
+        self._append_terminal_log(prompt)
+        if self._handle_terminal_cd(command):
+            return
+
+        process = QtCore.QProcess(self)
+        self.terminal_process = process
+        process.setWorkingDirectory(self.terminal_cwd)
+        process.setProcessEnvironment(self._terminal_environment())
+        process.setProcessChannelMode(QtCore.QProcess.SeparateChannels)
+        process.readyReadStandardOutput.connect(
+            lambda process=process: self._append_process_output(process.readAllStandardOutput())
+        )
+        process.readyReadStandardError.connect(
+            lambda process=process: self._append_process_output(process.readAllStandardError())
+        )
+        process.finished.connect(
+            lambda exit_code, exit_status, process=process: self._terminal_command_finished(
+                process, exit_code, exit_status
+            )
+        )
+        process.errorOccurred.connect(
+            lambda error, process=process: self._terminal_command_error(process, error)
+        )
+
+        if os.name == "nt":
+            program = "powershell.exe"
+            args = [
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
+                "$OutputEncoding = [System.Text.Encoding]::UTF8; "
+                + command,
+            ]
+        else:
+            program = "pwsh"
+            args = [
+                "-NoLogo",
+                "-NoProfile",
+                "-Command",
+                "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
+                "$OutputEncoding = [System.Text.Encoding]::UTF8; "
+                + command,
+            ]
+
+        self._set_terminal_running(True)
+        process.start(program, args)
+        if not process.waitForStarted(1000):
+            self._append_terminal_log(f"Could not start PowerShell: {process.errorString()}")
+            self.terminal_process = None
+            self._set_terminal_running(False)
+
+    def _append_process_output(self, data):
+        text = bytes(data).decode("utf-8", errors="replace").rstrip("\r\n")
+        if text:
+            self._append_terminal_log(text)
+
+    def _terminal_command_finished(self, process, exit_code, exit_status):
+        self._append_process_output(process.readAllStandardOutput())
+        self._append_process_output(process.readAllStandardError())
+        if exit_code != 0:
+            self._append_terminal_log(f"[exit {exit_code}]")
+        if self.terminal_process is process:
+            self.terminal_process = None
+        self._set_terminal_running(False)
+
+    def _terminal_command_error(self, process, error):
+        if self.terminal_process is process:
+            self._append_terminal_log(f"PowerShell error: {process.errorString()}")
+            self.terminal_process = None
+            self._set_terminal_running(False)
+
+    def _stop_terminal_command(self):
+        if self.terminal_process and self.terminal_process.state() != QtCore.QProcess.NotRunning:
+            self._append_terminal_log("[stopping process]")
+            self.terminal_process.kill()
+            self.terminal_process.waitForFinished(1000)
 
     def _open_gpx_dialog(self):
         if self.editor.load_gpx():
@@ -1783,6 +2093,7 @@ class MainWindow(QtWidgets.QMainWindow):
         old_undo_len = len(self.editor._undo)
         script_name = os.path.basename(script_path)
         previous_print = builtins.print
+        self._append_terminal_log(f"Running script: {script_name}")
 
         try:
             builtins.print = safe_print
@@ -1811,6 +2122,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.editor.sync_from_loaded_gpx(reset_history=False, reset_view=False)
             del self.editor._undo[old_undo_len:]
             details = traceback.format_exc()
+            self._append_terminal_log(f"Script failed: {script_name}\n{details}")
             QtWidgets.QMessageBox.critical(
                 self,
                 "Script failed",
