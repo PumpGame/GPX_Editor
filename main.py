@@ -23,11 +23,13 @@ import builtins
 import copy
 import importlib.util
 import inspect
+import math
 import webbrowser
 import ctypes
 import subprocess
 import tempfile
 import traceback
+import time
 from types import SimpleNamespace
 
 import numpy as np
@@ -89,6 +91,7 @@ class GPXEditor:
         self.kdtree = None
         self.current_path = None
         self.recent_files = []
+        self._track_duration_cache = None
 
         # --- podkład mapowy ---
         self.basemap_enabled = True
@@ -111,8 +114,10 @@ class GPXEditor:
         self.press_on_selected = False
         self.hover_idx = None
         self.hover_annotation = None
+        self.hover_marker = None
         self.track_line = None
         self.scatter = None
+        self._last_pan_redraw = 0.0
 
         # --- undo/redo ---
         self._undo = []
@@ -245,6 +250,7 @@ class GPXEditor:
         self.x = np.asarray(X, dtype=float)
         self.y = np.asarray(Y, dtype=float)
         self.point_metadata = list(self.segment.points)
+        self._refresh_track_duration_cache()
 
         self.selected.clear()
         self._redo.clear()
@@ -295,6 +301,7 @@ class GPXEditor:
         self.x = np.asarray(X, dtype=float)
         self.y = np.asarray(Y, dtype=float)
         self.point_metadata = list(self.segment.points)
+        self._refresh_track_duration_cache()
 
         self.selected.clear()
         if reset_history:
@@ -342,6 +349,7 @@ class GPXEditor:
 
         self.segment.points = new_points
         self.point_metadata = list(new_points)
+        self._refresh_track_duration_cache()
 
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
             None,
@@ -464,15 +472,41 @@ class GPXEditor:
             return
         try:
             pad = 50.0
-            x0, x1 = float(self.x.min() - pad), float(self.x.max() + pad)
-            y0, y1 = float(self.y.min() - pad), float(self.y.max() + pad)
+            if self.xlim_current and self.ylim_current:
+                x0, x1 = self.xlim_current
+                y0, y1 = self.ylim_current
+                x0, x1 = float(min(x0, x1) - pad), float(max(x0, x1) + pad)
+                y0, y1 = float(min(y0, y1) - pad), float(max(y0, y1) + pad)
+            else:
+                x0, x1 = float(self.x.min() - pad), float(self.x.max() + pad)
+                y0, y1 = float(self.y.min() - pad), float(self.y.max() + pad)
+            zoom = self._choose_basemap_zoom(x0, y0, x1, y1)
+            if zoom is None:
+                print("⚠️ Basemap skipped: visible area is too large. Zoom in and enable map again.")
+                self.basemap_enabled = False
+                return
             self.basemap_img, self.basemap_extent = ctx.bounds2img(
-                x0, y0, x1, y1, zoom=17, source=ctx.providers.OpenStreetMap.Mapnik
+                x0, y0, x1, y1, zoom=zoom, source=ctx.providers.OpenStreetMap.Mapnik
             )
             self.basemap_loaded = True
         except Exception as e:
             print("❌ Failed to load map:", e)
             self.basemap_enabled = False
+
+    @staticmethod
+    def _estimate_tile_count(x0, y0, x1, y1, zoom):
+        world_width_m = 40075016.68557849
+        tile_width_m = world_width_m / (2 ** zoom)
+        cols = max(1, math.ceil(abs(x1 - x0) / tile_width_m))
+        rows = max(1, math.ceil(abs(y1 - y0) / tile_width_m))
+        return cols * rows
+
+    def _choose_basemap_zoom(self, x0, y0, x1, y1):
+        max_tiles = 64
+        for zoom in range(17, 2, -1):
+            if self._estimate_tile_count(x0, y0, x1, y1, zoom) <= max_tiles:
+                return zoom
+        return None
 
     def show_map(self, html_path="temp_map.html"):
         if self.x.size == 0:
@@ -560,6 +594,7 @@ class GPXEditor:
         x, y, point_metadata, sel = self._undo.pop()
         self.x, self.y = x, y
         self.point_metadata = list(point_metadata)
+        self._refresh_track_duration_cache()
         self.selected = set(sel)
         self.kdtree = KDTree(np.c_[self.x, self.y]) if KDTree is not None else None
         self._update_plot(full=True)
@@ -577,12 +612,19 @@ class GPXEditor:
         x, y, point_metadata, sel = self._redo.pop()
         self.x, self.y = x, y
         self.point_metadata = list(point_metadata)
+        self._refresh_track_duration_cache()
         self.selected = set(sel)
         self.kdtree = KDTree(np.c_[self.x, self.y]) if KDTree is not None else None
         self._update_plot(full=True)
         self._update_info_text()
 
     def get_track_duration(self):
+        return self._track_duration_cache
+
+    def _refresh_track_duration_cache(self):
+        self._track_duration_cache = self._calculate_track_duration()
+
+    def _calculate_track_duration(self):
         times = [p.time for p in self.point_metadata if getattr(p, "time", None) is not None]
         if len(times) < 2:
             return None
@@ -643,6 +685,20 @@ class GPXEditor:
         self.hover_annotation.xy = (self.x[self.hover_idx], self.y[self.hover_idx])
         self.hover_annotation.set_text(self._format_point_time_text(self.hover_idx))
         self.hover_annotation.set_visible(True)
+
+    def _update_hover_marker(self):
+        if self.hover_marker is None:
+            return
+        if self.hover_idx is None or not (0 <= self.hover_idx < self.x.size):
+            self.hover_marker.set_visible(False)
+            return
+        self.hover_marker.set_offsets([[self.x[self.hover_idx], self.y[self.hover_idx]]])
+        self.hover_marker.set_visible(True)
+
+    def _refresh_hover_display(self):
+        self._update_hover_marker()
+        self._update_hover_annotation()
+        self.fig.canvas.draw_idle()
 
     def _nearest_index(self, x0, y0):
         if self.x.size == 0:
@@ -778,6 +834,7 @@ class GPXEditor:
         self.x = self.x[n:]
         self.y = self.y[n:]
         self.point_metadata = self.point_metadata[n:]
+        self._refresh_track_duration_cache()
         # przesuń selekcję
         self.selected = {i - n for i in self.selected if i - n >= 0}
         self.kdtree = KDTree(np.c_[self.x, self.y]) if KDTree is not None else None
@@ -795,6 +852,7 @@ class GPXEditor:
         self.x = self.x[:-n]
         self.y = self.y[:-n]
         self.point_metadata = self.point_metadata[:-n]
+        self._refresh_track_duration_cache()
         self.selected = {i for i in self.selected if i < self.x.size}
         self.kdtree = KDTree(np.c_[self.x, self.y]) if KDTree is not None else None
         self._update_plot(full=True)
@@ -812,6 +870,7 @@ class GPXEditor:
         self.x = self.x[mask]
         self.y = self.y[mask]
         self.point_metadata = [p for i, p in enumerate(self.point_metadata) if mask[i]]
+        self._refresh_track_duration_cache()
         self.selected.clear()
         self.kdtree = KDTree(np.c_[self.x, self.y]) if KDTree is not None else None
         self._update_plot(full=True)
@@ -866,7 +925,7 @@ class GPXEditor:
     def _on_motion(self, event):
         if event.inaxes != self.ax and self.hover_idx is not None:
             self.hover_idx = None
-            self._update_plot()
+            self._refresh_hover_display()
             return
 
         # pan PPM
@@ -889,7 +948,12 @@ class GPXEditor:
                 self.ax.set_xlim(*new_xlim)
                 self.ax.set_ylim(*new_ylim)
             self.last_canvas_xy = (event.x, event.y)
-            self.fig.canvas.draw_idle()
+            now = time.monotonic()
+            if now - self._last_pan_redraw >= 0.05:
+                self._last_pan_redraw = now
+                self._update_plot()
+            else:
+                self.fig.canvas.draw_idle()
             return
 
         if self._selection_tool_active():
@@ -901,7 +965,7 @@ class GPXEditor:
             new_hover = idx if (dist is not None and dist <= pick_tol) else None
             if new_hover != self.hover_idx:
                 self.hover_idx = new_hover
-                self._update_plot()
+                self._refresh_hover_display()
 
         if self.pending_drag and not self.dragged and event.x is not None and event.y is not None:
             dx_px = event.x - self.press_canvas_xy[0]
@@ -966,7 +1030,7 @@ class GPXEditor:
         self.ylim_current = tuple(new_ylim)
         self.ax.set_xlim(new_xlim)
         self.ax.set_ylim(new_ylim)
-        self.fig.canvas.draw_idle()
+        self._update_plot()
 
     def _apply_selection_click(self, idx, key):
         if idx is None:
@@ -1026,10 +1090,63 @@ class GPXEditor:
 
     # -------------------------- Rysowanie --------------------------
 
+    def _set_default_view_limits(self):
+        if not self.x.size:
+            return False
+        self.xlim_current = (float(self.x.min()) - 500, float(self.x.max()) + 500)
+        self.ylim_current = (float(self.y.min()) - 500, float(self.y.max()) + 500)
+        return True
+
+    def _get_view_bounds(self, padding_ratio=0.08):
+        if not (self.xlim_current and self.ylim_current):
+            return None
+        x0, x1 = self.xlim_current
+        y0, y1 = self.ylim_current
+        xmin, xmax = sorted((float(x0), float(x1)))
+        ymin, ymax = sorted((float(y0), float(y1)))
+        dx = xmax - xmin
+        dy = ymax - ymin
+        if dx > 0:
+            xmin -= dx * padding_ratio
+            xmax += dx * padding_ratio
+        if dy > 0:
+            ymin -= dy * padding_ratio
+            ymax += dy * padding_ratio
+        return xmin, xmax, ymin, ymax
+
+    def _display_indices(self, max_points=8000, include_selected=False):
+        if self.x.size == 0:
+            return np.array([], dtype=int)
+
+        bounds = self._get_view_bounds()
+        if bounds is None:
+            idxs = np.arange(self.x.size, dtype=int)
+        else:
+            xmin, xmax, ymin, ymax = bounds
+            idxs = np.flatnonzero(
+                (self.x >= xmin) & (self.x <= xmax) &
+                (self.y >= ymin) & (self.y <= ymax)
+            )
+            if idxs.size == 0:
+                idxs = np.arange(self.x.size, dtype=int)
+
+        if idxs.size > max_points:
+            step = int(math.ceil(idxs.size / max_points))
+            idxs = idxs[::step]
+
+        extras = []
+        if include_selected and self.selected:
+            extras.extend(i for i in self.selected if 0 <= i < self.x.size)
+        if include_selected and self.hover_idx is not None and 0 <= self.hover_idx < self.x.size:
+            extras.append(self.hover_idx)
+        if extras:
+            idxs = np.union1d(idxs, np.asarray(extras, dtype=int))
+
+        return idxs
+
     def _reset_view(self):
         if self.x.size:
-            self.xlim_current = (float(self.x.min()) - 500, float(self.x.max()) + 500)
-            self.ylim_current = (float(self.y.min()) - 500, float(self.y.max()) + 500)
+            self._set_default_view_limits()
             self.ax.set_xlim(*self.xlim_current)
             self.ax.set_ylim(*self.ylim_current)
             self.fig.canvas.draw_idle()
@@ -1042,6 +1159,10 @@ class GPXEditor:
             self.scatter = None
             self.basemap_artist = None
             self.hover_annotation = None
+            self.hover_marker = None
+
+        if self.x.size and (self.xlim_current is None or self.ylim_current is None):
+            self._set_default_view_limits()
 
         # Podkład
         if self.basemap_enabled:
@@ -1051,7 +1172,8 @@ class GPXEditor:
                     self.basemap_artist = self.ax.imshow(
                         self.basemap_img,
                         extent=self.basemap_extent,
-                        interpolation='bilinear',
+                        interpolation='nearest',
+                        resample=False,
                         zorder=0
                     )
                 else:
@@ -1063,34 +1185,53 @@ class GPXEditor:
 
         # Ślad
         if self.x.size:
-            colors = np.array(['red'] * self.x.size, dtype=object)
-            if self.selected:
-                idxs = np.fromiter(self.selected, dtype=int)
-                idxs = idxs[(idxs >= 0) & (idxs < self.x.size)]
-                colors[idxs] = 'green'
-            if self.hover_idx is not None and 0 <= self.hover_idx < self.x.size:
-                if self.hover_idx not in self.selected:
-                    colors[self.hover_idx] = 'orange'
+            line_idxs = self._display_indices(max_points=10000, include_selected=False)
+            point_idxs = self._display_indices(max_points=8000, include_selected=True)
+            line_x = self.x[line_idxs] if line_idxs.size else np.array([], dtype=float)
+            line_y = self.y[line_idxs] if line_idxs.size else np.array([], dtype=float)
+            point_offsets = (
+                np.column_stack((self.x[point_idxs], self.y[point_idxs]))
+                if point_idxs.size else np.empty((0, 2), dtype=float)
+            )
+
+            colors = np.full(point_idxs.size, 'red', dtype=object)
+            if self.selected and point_idxs.size:
+                selected_idxs = np.fromiter(self.selected, dtype=int)
+                colors[np.isin(point_idxs, selected_idxs)] = 'green'
             if self.track_line is None:
-                (self.track_line,) = self.ax.plot(self.x, self.y, '-', zorder=4)
+                (self.track_line,) = self.ax.plot(line_x, line_y, '-', zorder=4)
             else:
-                self.track_line.set_data(self.x, self.y)
+                self.track_line.set_data(line_x, line_y)
 
             if self.scatter is None:
-                self.scatter = self.ax.scatter(self.x, self.y, c=colors, s=14, zorder=5)
+                point_size = 6 if self.x.size > 20000 else 14
+                self.scatter = self.ax.scatter(
+                    point_offsets[:, 0], point_offsets[:, 1],
+                    c=colors,
+                    s=point_size,
+                    zorder=5,
+                    rasterized=True
+                )
             else:
-                offsets = np.column_stack((self.x, self.y))
-                self.scatter.set_offsets(offsets)
+                self.scatter.set_offsets(point_offsets)
                 self.scatter.set_facecolor(colors)
+
+            if self.hover_marker is None:
+                self.hover_marker = self.ax.scatter(
+                    [], [],
+                    c='orange',
+                    edgecolors='black',
+                    linewidths=0.7,
+                    s=48,
+                    zorder=7,
+                )
+            self._update_hover_marker()
 
             if self.xlim_current and self.ylim_current:
                 self.ax.set_xlim(*self.xlim_current)
                 self.ax.set_ylim(*self.ylim_current)
             else:
                 self._reset_view()
-                self.ax.relim()
-                self.ax.autoscale_view()
-                self.canvas.draw_idle()
 
 
         if self.hover_annotation is None:
@@ -1456,7 +1597,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._status_timer = QtCore.QTimer(self)
         self._status_timer.timeout.connect(self._update_status_bar)
-        self._status_timer.start(300)
+        self._status_timer.start(1000)
 
     def _build_toolbar(self):
         toolbar = QtWidgets.QToolBar("Main")
