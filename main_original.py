@@ -19,10 +19,16 @@ import matplotlib.pyplot as plt
 import sys
 import os
 import atexit
+import builtins
+import copy
+import importlib.util
+import inspect
 import webbrowser
 import ctypes
 import subprocess
 import tempfile
+import traceback
+from types import SimpleNamespace
 
 import numpy as np
 import gpxpy
@@ -47,6 +53,26 @@ except Exception:
 
 APP_ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "GPXEditor_icon.ico")
 WINDOWS_APP_ID = "surfplorer.GPXEditor"
+
+
+ORIGINAL_PRINT = builtins.print
+
+
+def safe_print(*args, **kwargs):
+    try:
+        ORIGINAL_PRINT(*args, **kwargs)
+    except UnicodeEncodeError:
+        sep = kwargs.get("sep", " ")
+        end = kwargs.get("end", "\n")
+        file = kwargs.get("file", sys.stdout)
+        message = sep.join(str(arg) for arg in args) + end
+        encoding = getattr(file, "encoding", None) or "utf-8"
+        file.write(message.encode(encoding, errors="replace").decode(encoding, errors="replace"))
+        if kwargs.get("flush"):
+            file.flush()
+
+
+print = safe_print
 
 
 class GPXEditor:
@@ -74,6 +100,7 @@ class GPXEditor:
         # --- widok / interakcja ---
         self.xlim_current = None
         self.ylim_current = None
+        self.freeze_view = False
         self.dragged = False
         self.drag_origin = None
         self.last_canvas_xy = None
@@ -153,15 +180,15 @@ class GPXEditor:
             "GPX files (*.gpx)",
         )
         if not path:
-            return
+            return False
 
-        self.load_gpx_from_path(path)
+        return self.load_gpx_from_path(path)
 
     def reload_current_gpx(self):
         if not self.current_path:
             print("⚠️ No GPX file loaded to refresh.")
-            return
-        self.load_gpx_from_path(self.current_path)
+            return False
+        return self.load_gpx_from_path(self.current_path)
 
     def load_gpx_from_path(self, path):
         path = os.path.abspath(path)
@@ -221,6 +248,54 @@ class GPXEditor:
         self.current_path = path
         self._push_recent_file(path)
         print(f"✅ Loaded: {path} | points: {len(self.x)}")
+        return True
+
+    def sync_from_loaded_gpx(self, reset_history=False, reset_view=True):
+        if self.gpx is None:
+            print("⚠️ No GPX object loaded.")
+            return False
+
+        best_seg = None
+        best_len = -1
+        best_track = None
+        for tr in self.gpx.tracks:
+            for seg in tr.segments:
+                if len(seg.points) > best_len:
+                    best_len = len(seg.points)
+                    best_seg = seg
+                    best_track = tr
+
+        if not best_seg or best_len < 2:
+            print("❌ GPX does not contain a valid segment after script.")
+            return False
+
+        self.track = best_track
+        self.segment = best_seg
+
+        lons = [p.longitude for p in self.segment.points]
+        lats = [p.latitude for p in self.segment.points]
+        X, Y = self.to_merc.transform(lons, lats)
+        self.x = np.asarray(X, dtype=float)
+        self.y = np.asarray(Y, dtype=float)
+        self.point_metadata = list(self.segment.points)
+
+        self.selected.clear()
+        if reset_history:
+            self._redo.clear()
+            self._undo.clear()
+        self.gpx_loaded = True
+        self.kdtree = KDTree(np.c_[self.x, self.y]) if KDTree is not None else None
+
+        self.basemap_loaded = False
+        self.basemap_img = None
+        self.basemap_extent = None
+        if reset_view or not self.freeze_view:
+            self.xlim_current = None
+            self.ylim_current = None
+        self.freeze_view = False
+
+        self._update_plot(full=True)
+        self._update_info_text()
         return True
 
     def _push_recent_file(self, path):
@@ -418,7 +493,7 @@ class GPXEditor:
                 p = self.point_metadata[i]
                 if p.time:
                     time_str = f"<time>{p.time.isoformat()}</time>"
-            
+
             xml_lines.append(f'      <trkpt lat="{lat}" lon="{lon}">')
             if time_str:
                 xml_lines.append(f"        {time_str}")
@@ -597,8 +672,13 @@ class GPXEditor:
     def _on_lasso_select(self, verts):
         if not verts:
             return
-        # verts są w koord. ekranu — przelicz do danych
-        poly_data = self.ax.transData.inverted().transform(verts)
+        # LassoSelector passes vertices in data coordinates.
+        poly_data = np.asarray(
+            [(x, y) for x, y in verts if x is not None and y is not None],
+            dtype=float,
+        )
+        if len(poly_data) < 3:
+            return
         path = Path(poly_data, closed=True)
         pts = np.column_stack((self.x, self.y))
         inside = path.contains_points(pts)
@@ -623,6 +703,9 @@ class GPXEditor:
                 self.lasso_selector = None
             except Exception:
                 self.lasso_selector = None
+
+    def _selection_tool_active(self):
+        return self.rect_selector is not None or self.lasso_selector is not None
 
     # ---- kopiowanie współrzędnych ----
     def copy_selected_coords(self):
@@ -730,6 +813,14 @@ class GPXEditor:
             self.last_canvas_xy = (event.x, event.y)
             return
 
+        if self._selection_tool_active() and event.button == MouseButton.LEFT:
+            self.pending_drag = False
+            self.press_idx = None
+            self.press_key = None
+            self.press_canvas_xy = None
+            self.press_on_selected = False
+            return
+
         # LPM – wybór/przeciąganie
         if event.button == MouseButton.LEFT:
             idx, dist = self._nearest_index(event.xdata, event.ydata)
@@ -785,6 +876,9 @@ class GPXEditor:
             self.fig.canvas.draw_idle()
             return
 
+        if self._selection_tool_active():
+            return
+
         if not self.dragged and event.xdata is not None and event.ydata is not None:
             idx, dist = self._nearest_index(event.xdata, event.ydata)
             pick_tol = 12.0  # ~metry w EPSG:3857
@@ -816,6 +910,19 @@ class GPXEditor:
             self._update_plot()
 
     def _on_release(self, event):
+        if self._selection_tool_active():
+            self.dragged = False
+            self.drag_origin = None
+            self.last_canvas_xy = None
+            self.pending_drag = False
+            self.press_idx = None
+            self.press_key = None
+            self.press_canvas_xy = None
+            self.press_on_selected = False
+            if self.gpx_loaded and self.x.size:
+                self.kdtree = KDTree(np.c_[self.x, self.y]) if KDTree is not None else None
+            return
+
         if self.pending_drag and not self.dragged and self.press_idx is not None:
             self._apply_selection_click(self.press_idx, self.press_key)
         self.dragged = False
@@ -1024,6 +1131,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.resize(1560, 940)
         self.setAcceptDrops(True)
         self._selection_mode = "Single point"
+        self.scripts_dir = None
         self._apply_theme()
         self._build_ui()
 
@@ -1123,7 +1231,15 @@ class MainWindow(QtWidgets.QMainWindow):
         group_file_layout = QtWidgets.QVBoxLayout(group_file)
 
         btn_open = QtWidgets.QPushButton("Open GPX")
-        btn_open.clicked.connect(self.editor.load_gpx)
+        btn_open.clicked.connect(self._open_gpx_dialog)
+
+        btn_refresh_current = QtWidgets.QPushButton("Refresh current GPX")
+        btn_refresh_current.clicked.connect(self._refresh_current_gpx)
+
+        self.recent_files_combo = QtWidgets.QComboBox()
+        self.recent_files_combo.setMinimumWidth(180)
+        self.recent_files_combo.setEnabled(False)
+        self.recent_files_combo.activated.connect(self._open_recent_file)
 
         btn_save = QtWidgets.QPushButton("Save…")
         btn_save.clicked.connect(self.editor.save_gpx)
@@ -1132,6 +1248,9 @@ class MainWindow(QtWidgets.QMainWindow):
         btn_save_simple_oneline.clicked.connect(self.editor.save_simple_gpx_oneline)
 
         group_file_layout.addWidget(btn_open)
+        group_file_layout.addWidget(btn_refresh_current)
+        group_file_layout.addWidget(QtWidgets.QLabel("Recent:"))
+        group_file_layout.addWidget(self.recent_files_combo)
         group_file_layout.addWidget(btn_save)
         group_file_layout.addWidget(btn_save_simple_oneline)
 
@@ -1252,17 +1371,19 @@ class MainWindow(QtWidgets.QMainWindow):
         group_scripts_layout = QtWidgets.QVBoxLayout(group_scripts)
 
         btn_select_dir = QtWidgets.QPushButton("Select Scripts Directory")
+        btn_select_dir.clicked.connect(self._select_scripts_directory)
 
-        # Bezpieczne podpięcie — nie wywali aplikacji, jeśli metoda nie istnieje.
-        if hasattr(self, "_select_scripts_directory"):
-            btn_select_dir.clicked.connect(self._select_scripts_directory)
-        else:
-            btn_select_dir.setEnabled(False)
-            btn_select_dir.setToolTip("Missing method: _select_scripts_directory")
+        btn_scripts_help = QtWidgets.QPushButton("Script API help")
+        btn_scripts_help.clicked.connect(self._show_custom_scripts_help)
+
+        self.scripts_dir_label = QtWidgets.QLabel("No scripts folder selected")
+        self.scripts_dir_label.setWordWrap(True)
 
         self.scripts_container = QtWidgets.QVBoxLayout()
 
         group_scripts_layout.addWidget(btn_select_dir)
+        group_scripts_layout.addWidget(btn_scripts_help)
+        group_scripts_layout.addWidget(self.scripts_dir_label)
         group_scripts_layout.addLayout(self.scripts_container)
 
         right_layout.addWidget(group_scripts)
@@ -1282,6 +1403,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
         if hasattr(self, "_update_recent_files_combo"):
             self._update_recent_files_combo()
+
+        default_scripts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "custom_scripts")
+        if os.path.isdir(default_scripts_dir):
+            self._load_scripts_directory(default_scripts_dir)
 
         self._status_timer = QtCore.QTimer(self)
         self._status_timer.timeout.connect(self._update_status_bar)
@@ -1305,17 +1430,6 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         toolbar.addSeparator()
 
-        toolbar.addWidget(QtWidgets.QLabel("Recent: "))
-        self.recent_files_combo = QtWidgets.QComboBox()
-        self.recent_files_combo.setMinimumWidth(260)
-        self.recent_files_combo.setSizePolicy(
-            QtWidgets.QSizePolicy.Expanding,
-            QtWidgets.QSizePolicy.Fixed,
-        )
-        self.recent_files_combo.setEnabled(False)
-        self.recent_files_combo.activated.connect(self._open_recent_file)
-        toolbar.addWidget(self.recent_files_combo)
-        toolbar.addSeparator()
         toolbar.addAction(
             style.standardIcon(QtWidgets.QStyle.SP_ArrowBack),
             "Undo",
@@ -1353,6 +1467,16 @@ class MainWindow(QtWidgets.QMainWindow):
             f"Selected: {selected_points} | Time: {duration_text} | {shortcuts}"
         )
 
+    def _set_selection_mode(self, mode):
+        self._selection_mode = mode
+        if mode == "Rectangle":
+            self.editor.activate_rectangle_selection()
+        elif mode == "Lasso":
+            self.editor.activate_lasso_selection()
+        else:
+            self.editor._deactivate_selectors()
+        self._update_status_bar()
+
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
             urls = event.mimeData().urls()
@@ -1382,8 +1506,172 @@ class MainWindow(QtWidgets.QMainWindow):
         print(f"Freeze view: {'ON' if self.editor.freeze_view else 'OFF'}")
 
     def _open_gpx_dialog(self):
-        self.editor.load_gpx()
-        self._update_recent_files_combo()
+        if self.editor.load_gpx():
+            self._update_recent_files_combo()
+            self._update_status_bar()
+
+    def _refresh_current_gpx(self):
+        if self.editor.reload_current_gpx():
+            self._update_recent_files_combo()
+            self._update_status_bar()
+
+    def _select_scripts_directory(self):
+        default_dir = self.scripts_dir or os.path.join(os.path.dirname(os.path.abspath(__file__)), "custom_scripts")
+        path = QtWidgets.QFileDialog.getExistingDirectory(
+            self,
+            "Select scripts directory",
+            default_dir,
+        )
+        if path:
+            self._load_scripts_directory(path)
+
+    def _load_scripts_directory(self, path):
+        path = os.path.abspath(path)
+        self.scripts_dir = path
+        self.scripts_dir_label.setText(f"Folder:\n{path}")
+        self.scripts_dir_label.setToolTip(path)
+        self._clear_scripts_container()
+
+        if not os.path.isdir(path):
+            self.scripts_container.addWidget(QtWidgets.QLabel("Folder does not exist."))
+            return
+
+        script_paths = [
+            os.path.join(path, name)
+            for name in sorted(os.listdir(path), key=str.lower)
+            if (
+                name.lower().endswith(".py")
+                and not name.startswith("_")
+                and self._is_editor_script(os.path.join(path, name))
+            )
+        ]
+
+        if not script_paths:
+            self.scripts_container.addWidget(QtWidgets.QLabel("No .py scripts found."))
+            return
+
+        for script_path in script_paths:
+            label = os.path.splitext(os.path.basename(script_path))[0].replace("_", " ")
+            btn = QtWidgets.QPushButton(label)
+            btn.setToolTip(script_path)
+            btn.clicked.connect(lambda checked=False, p=script_path: self._run_custom_script(p))
+            self.scripts_container.addWidget(btn)
+
+    def _is_editor_script(self, script_path):
+        try:
+            with open(script_path, "r", encoding="utf-8-sig", errors="replace") as f:
+                return any(line.lstrip().startswith("def run(") for line in f)
+        except OSError:
+            return False
+
+    def _clear_scripts_container(self):
+        while self.scripts_container.count():
+            item = self.scripts_container.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+            child_layout = item.layout()
+            if child_layout is not None:
+                while child_layout.count():
+                    child_item = child_layout.takeAt(0)
+                    child_widget = child_item.widget()
+                    if child_widget is not None:
+                        child_widget.deleteLater()
+
+    def _run_custom_script(self, script_path):
+        if not self.editor.gpx_loaded or self.editor.gpx is None:
+            QtWidgets.QMessageBox.warning(self, "No GPX loaded", "Open a GPX file before running a script.")
+            return
+
+        if not os.path.isfile(script_path):
+            QtWidgets.QMessageBox.warning(self, "Script missing", f"Script file does not exist:\n{script_path}")
+            self._load_scripts_directory(self.scripts_dir)
+            return
+
+        old_gpx = copy.deepcopy(self.editor.gpx)
+        old_undo_len = len(self.editor._undo)
+        script_name = os.path.basename(script_path)
+        previous_print = builtins.print
+
+        try:
+            builtins.print = safe_print
+            self.editor._push_undo()
+            module_name = f"gpx_custom_script_{abs(hash(script_path))}"
+            spec = importlib.util.spec_from_file_location(module_name, script_path)
+            if spec is None or spec.loader is None:
+                raise RuntimeError("Could not load script module.")
+
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+
+            run_func = getattr(module, "run", None)
+            if not callable(run_func):
+                raise RuntimeError("Script must define a callable run(gpx) function.")
+
+            result = self._call_custom_script(run_func)
+            if result is not None and hasattr(result, "tracks"):
+                self.editor.gpx = result
+
+            if not self.editor.sync_from_loaded_gpx(reset_history=False, reset_view=True):
+                raise RuntimeError("Script left the GPX without a valid track segment.")
+
+        except Exception as exc:
+            self.editor.gpx = old_gpx
+            self.editor.sync_from_loaded_gpx(reset_history=False, reset_view=False)
+            del self.editor._undo[old_undo_len:]
+            details = traceback.format_exc()
+            QtWidgets.QMessageBox.critical(
+                self,
+                "Script failed",
+                f"{script_name} failed:\n\n{exc}\n\nDetails:\n{details}",
+            )
+            return
+        finally:
+            builtins.print = previous_print
+
+        self._update_status_bar()
+        self.statusBar().showMessage(f"Script completed: {script_name}", 5000)
+        print(f"✅ Script completed: {script_path}")
+
+    def _call_custom_script(self, run_func):
+        context = SimpleNamespace(
+            gpx=self.editor.gpx,
+            editor=self.editor,
+            selected_indices=sorted(self.editor.selected),
+            current_path=self.editor.current_path,
+            numpy=np,
+            gpxpy=gpxpy,
+        )
+        params = list(inspect.signature(run_func).parameters.values())
+        if not params:
+            return run_func()
+        if len(params) == 1:
+            name = params[0].name.lower()
+            if name in {"context", "ctx"}:
+                return run_func(context)
+            return run_func(self.editor.gpx)
+        return run_func(self.editor.gpx, context)
+
+    def _show_custom_scripts_help(self):
+        QtWidgets.QMessageBox.information(
+            self,
+            "Custom Scripts API",
+            (
+                "Custom scripts are normal .py files in the selected folder.\n\n"
+                "Basic shape:\n"
+                "def run(gpx):\n"
+                "    for track in gpx.tracks:\n"
+                "        for segment in track.segments:\n"
+                "            segment.points = segment.points[::2]\n\n"
+                "Mutate the passed gpx object in place. After run() returns, GPXEditor rebuilds "
+                "the current view from that object.\n\n"
+                "Optional advanced signature:\n"
+                "def run(gpx, context):\n"
+                "    # context.editor, context.selected_indices, context.current_path\n"
+                "    pass\n\n"
+                "A script can also use def run(context) if it only needs the context object."
+            ),
+        )
 
     def _open_recent_file(self, index):
         if index < 0 or index >= self.recent_files_combo.count():
