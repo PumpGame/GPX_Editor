@@ -53,7 +53,21 @@ except Exception:
     KDTree = None
 
 
-APP_ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "GPXEditor_icon.ico")
+def app_base_dir():
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def bundled_resource_path(name):
+    bundle_dir = getattr(sys, "_MEIPASS", None)
+    if bundle_dir:
+        return os.path.join(bundle_dir, name)
+    return os.path.join(app_base_dir(), name)
+
+
+APP_BASE_DIR = app_base_dir()
+APP_ICON_PATH = bundled_resource_path("GPXEditor_icon.ico")
 WINDOWS_APP_ID = "surfplorer.GPXEditor"
 
 
@@ -111,6 +125,7 @@ class GPXEditor:
         self.current_path = None
         self.recent_files = []
         self._track_duration_cache = None
+        self._start_time_cache = None
 
         # --- podkład mapowy ---
         self.basemap_enabled = True
@@ -137,6 +152,7 @@ class GPXEditor:
         self.hover_marker = None
         self.track_line = None
         self.scatter = None
+        self.selected_scatter = None
         self._last_pan_redraw = 0.0
         self._selector_disabled_for_drag = None
 
@@ -275,6 +291,7 @@ class GPXEditor:
         self.y = np.asarray(Y, dtype=float)
         self.point_metadata = list(self.segment.points)
         self._refresh_track_duration_cache()
+        self._refresh_start_time_cache()
 
         self.selected.clear()
         self._redo.clear()
@@ -326,6 +343,7 @@ class GPXEditor:
         self.y = np.asarray(Y, dtype=float)
         self.point_metadata = list(self.segment.points)
         self._refresh_track_duration_cache()
+        self._refresh_start_time_cache()
 
         self.selected.clear()
         if reset_history:
@@ -374,6 +392,7 @@ class GPXEditor:
         self.segment.points = new_points
         self.point_metadata = list(new_points)
         self._refresh_track_duration_cache()
+        self._refresh_start_time_cache()
 
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
             None,
@@ -619,6 +638,7 @@ class GPXEditor:
         self.x, self.y = x, y
         self.point_metadata = list(point_metadata)
         self._refresh_track_duration_cache()
+        self._refresh_start_time_cache()
         self.selected = set(sel)
         self.kdtree = KDTree(np.c_[self.x, self.y]) if KDTree is not None else None
         self._update_plot(full=True)
@@ -637,6 +657,7 @@ class GPXEditor:
         self.x, self.y = x, y
         self.point_metadata = list(point_metadata)
         self._refresh_track_duration_cache()
+        self._refresh_start_time_cache()
         self.selected = set(sel)
         self.kdtree = KDTree(np.c_[self.x, self.y]) if KDTree is not None else None
         self._update_plot(full=True)
@@ -647,6 +668,13 @@ class GPXEditor:
 
     def _refresh_track_duration_cache(self):
         self._track_duration_cache = self._calculate_track_duration()
+
+    def _refresh_start_time_cache(self):
+        for p in self.point_metadata:
+            if getattr(p, "time", None) is not None:
+                self._start_time_cache = p.time
+                return
+        self._start_time_cache = None
 
     def _calculate_track_duration(self):
         times = [p.time for p in self.point_metadata if getattr(p, "time", None) is not None]
@@ -691,11 +719,7 @@ class GPXEditor:
         point = self.point_metadata[idx]
         timestamp = point.time.isoformat(sep=" ", timespec="seconds") if point.time else "no timestamp"
         segment_elapsed = "no timestamp"
-        start_time = None
-        for candidate in self.point_metadata:
-            if getattr(candidate, "time", None) is not None:
-                start_time = candidate.time
-                break
+        start_time = self._start_time_cache
         if start_time is not None and point.time is not None:
             segment_elapsed = self.format_duration(point.time - start_time)
         return f"#{idx}\nglobal: {timestamp}\ntrack: {segment_elapsed}"
@@ -865,6 +889,7 @@ class GPXEditor:
         self.y = self.y[n:]
         self.point_metadata = self.point_metadata[n:]
         self._refresh_track_duration_cache()
+        self._refresh_start_time_cache()
         # przesuń selekcję
         self.selected = {i - n for i in self.selected if i - n >= 0}
         self.kdtree = KDTree(np.c_[self.x, self.y]) if KDTree is not None else None
@@ -883,6 +908,7 @@ class GPXEditor:
         self.y = self.y[:-n]
         self.point_metadata = self.point_metadata[:-n]
         self._refresh_track_duration_cache()
+        self._refresh_start_time_cache()
         self.selected = {i for i in self.selected if i < self.x.size}
         self.kdtree = KDTree(np.c_[self.x, self.y]) if KDTree is not None else None
         self._update_plot(full=True)
@@ -901,6 +927,7 @@ class GPXEditor:
         self.y = self.y[mask]
         self.point_metadata = [p for i, p in enumerate(self.point_metadata) if mask[i]]
         self._refresh_track_duration_cache()
+        self._refresh_start_time_cache()
         self.selected.clear()
         self.kdtree = KDTree(np.c_[self.x, self.y]) if KDTree is not None else None
         self._update_plot(full=True)
@@ -1203,6 +1230,7 @@ class GPXEditor:
             self.ax.clear()
             self.track_line = None
             self.scatter = None
+            self.selected_scatter = None
             self.basemap_artist = None
             self.hover_annotation = None
             self.hover_marker = None
@@ -1239,11 +1267,16 @@ class GPXEditor:
                 np.column_stack((self.x[point_idxs], self.y[point_idxs]))
                 if point_idxs.size else np.empty((0, 2), dtype=float)
             )
-
-            colors = np.full(point_idxs.size, 'red', dtype=object)
-            if self.selected and point_idxs.size:
+            if self.selected:
                 selected_idxs = np.fromiter(self.selected, dtype=int)
-                colors[np.isin(point_idxs, selected_idxs)] = 'green'
+                selected_idxs = selected_idxs[(selected_idxs >= 0) & (selected_idxs < self.x.size)]
+                selected_offsets = (
+                    np.column_stack((self.x[selected_idxs], self.y[selected_idxs]))
+                    if selected_idxs.size else np.empty((0, 2), dtype=float)
+                )
+            else:
+                selected_offsets = np.empty((0, 2), dtype=float)
+
             if self.track_line is None:
                 (self.track_line,) = self.ax.plot(line_x, line_y, '-', zorder=4)
             else:
@@ -1253,14 +1286,26 @@ class GPXEditor:
                 point_size = 6 if self.x.size > 20000 else 14
                 self.scatter = self.ax.scatter(
                     point_offsets[:, 0], point_offsets[:, 1],
-                    c=colors,
+                    c='red',
                     s=point_size,
                     zorder=5,
                     rasterized=True
                 )
             else:
                 self.scatter.set_offsets(point_offsets)
-                self.scatter.set_facecolor(colors)
+                self.scatter.set_facecolor('red')
+
+            if self.selected_scatter is None:
+                selected_size = 18 if self.x.size > 20000 else 26
+                self.selected_scatter = self.ax.scatter(
+                    selected_offsets[:, 0], selected_offsets[:, 1],
+                    c='green',
+                    s=selected_size,
+                    zorder=6,
+                    rasterized=True
+                )
+            else:
+                self.selected_scatter.set_offsets(selected_offsets)
 
             if self.hover_marker is None:
                 self.hover_marker = self.ax.scatter(
@@ -1337,7 +1382,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setAcceptDrops(True)
         self._selection_mode = "Single point"
         self.scripts_dir = None
-        self.project_dir = os.path.dirname(os.path.abspath(__file__))
+        self.project_dir = APP_BASE_DIR
         self.terminal_cwd = self.project_dir
         self.terminal_process = None
         self._print_listener = None
@@ -1721,7 +1766,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if hasattr(self, "_update_recent_files_combo"):
             self._update_recent_files_combo()
 
-        default_scripts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "custom_scripts")
+        default_scripts_dir = os.path.join(APP_BASE_DIR, "custom_scripts")
+        if not os.path.isdir(default_scripts_dir):
+            default_scripts_dir = bundled_resource_path("custom_scripts")
         if os.path.isdir(default_scripts_dir):
             self._load_scripts_directory(default_scripts_dir)
 
@@ -2017,7 +2064,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._update_status_bar()
 
     def _select_scripts_directory(self):
-        default_dir = self.scripts_dir or os.path.join(os.path.dirname(os.path.abspath(__file__)), "custom_scripts")
+        default_dir = self.scripts_dir or os.path.join(APP_BASE_DIR, "custom_scripts")
         path = QtWidgets.QFileDialog.getExistingDirectory(
             self,
             "Select scripts directory",
