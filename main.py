@@ -1605,6 +1605,35 @@ class MainWindow(QtWidgets.QMainWindow):
                 padding: 3px 6px;
                 font-family: Consolas, "Cascadia Mono", monospace;
             }
+            QTabWidget::pane {
+                background: #ffffff;
+                border: 1px solid #c6d0dc;
+                border-radius: 4px;
+                top: -1px;
+            }
+            QTabBar::tab {
+                background: #dbe4ee;
+                color: #1f2933;
+                border: 1px solid #aebdcc;
+                border-bottom-color: #c6d0dc;
+                border-top-left-radius: 4px;
+                border-top-right-radius: 4px;
+                padding: 6px 12px;
+                margin-right: 2px;
+                min-width: 110px;
+                font-weight: 600;
+            }
+            QTabBar::tab:selected {
+                background: #ffffff;
+                color: #0f172a;
+                border-color: #7aa7d9;
+                border-bottom-color: #ffffff;
+                font-weight: 700;
+            }
+            QTabBar::tab:!selected:hover {
+                background: #eef2f6;
+                color: #0f172a;
+            }
             QRadioButton {
                 spacing: 7px;
                 padding: 4px 7px;
