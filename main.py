@@ -167,6 +167,7 @@ class GPXEditor:
 
         # --- Qt app (dialogs + clipboard) ---
         self.qt_app = QtWidgets.QApplication.instance()
+        self.open_gpx_callback = None
 
         # --- GUI ---
         self.fig = fig
@@ -1144,7 +1145,10 @@ class GPXEditor:
         elif k == 'ctrl+s':
             self.save_gpx()
         elif k == 'ctrl+o':
-            self.load_gpx()
+            if self.open_gpx_callback is not None:
+                self.open_gpx_callback()
+            else:
+                self.load_gpx()
         elif k == '[':
             self.remove_first_n(10)
         elif k == ']':
@@ -1381,6 +1385,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.resize(1560, 940)
         self.setAcceptDrops(True)
         self._selection_mode = "Single point"
+        self._tab_editors = {}
+        self.tabs = None
+        self.recent_files = []
         self.scripts_dir = None
         self.project_dir = APP_BASE_DIR
         self.terminal_cwd = self.project_dir
@@ -1393,6 +1400,147 @@ class MainWindow(QtWidgets.QMainWindow):
         self._print_listener = lambda message: self.terminal_log_signal.emit(message)
         add_print_listener(self._print_listener)
         self._append_terminal_log(f"Terminal ready: {self.terminal_cwd}")
+
+    @property
+    def editor(self):
+        editor = self._active_editor()
+        if editor is None:
+            raise RuntimeError("No active GPX tab")
+        return editor
+
+    def _active_editor(self):
+        if self.tabs is None:
+            return None
+        widget = self.tabs.currentWidget()
+        if widget is None:
+            return None
+        return self._tab_editors.get(widget)
+
+    def _new_empty_tab(self):
+        existing_titles = {
+            self.tabs.tabText(i)
+            for i in range(self.tabs.count())
+        } if self.tabs is not None else set()
+        title = "Untitled"
+        next_number = 2
+        while title in existing_titles:
+            title = f"Untitled {next_number}"
+            next_number += 1
+        return self._create_editor_tab(title)
+
+    def _create_editor_tab(self, title):
+        figure = Figure(figsize=(12, 8), facecolor="#ffffff")
+        canvas = FigureCanvas(figure)
+        editor = GPXEditor(figure, None, canvas)
+        editor.open_gpx_callback = self._open_gpx_dialog
+        if hasattr(self, "cut_input"):
+            editor.cut_input = self.cut_input
+        if hasattr(self, "pick_tolerance_input"):
+            editor.set_pick_tolerance(self.pick_tolerance_input.value())
+        editor.set_freeze_view(getattr(self, "freeze_view_button", None) and self.freeze_view_button.isChecked())
+        self._apply_selection_mode_to_editor(editor)
+
+        index = self.tabs.addTab(canvas, title)
+        self._tab_editors[canvas] = editor
+        self.tabs.setCurrentIndex(index)
+        self._sync_controls_from_editor()
+        self._update_status_bar()
+        return editor
+
+    def _close_current_tab(self):
+        if self.tabs is not None:
+            self._close_tab(self.tabs.currentIndex())
+
+    def _close_tab(self, index):
+        if self.tabs is None or index < 0 or index >= self.tabs.count():
+            return
+
+        widget = self.tabs.widget(index)
+        editor = self._tab_editors.pop(widget, None)
+        if editor is not None:
+            editor._deactivate_selectors()
+        self.tabs.removeTab(index)
+        widget.deleteLater()
+
+        if self.tabs.count() == 0:
+            self._new_empty_tab()
+        self._sync_controls_from_editor()
+        self._update_status_bar()
+
+    def _apply_selection_mode_to_editor(self, editor):
+        if self._selection_mode == "Rectangle":
+            editor.activate_rectangle_selection()
+        elif self._selection_mode == "Lasso":
+            editor.activate_lasso_selection()
+        else:
+            editor._deactivate_selectors()
+
+    def _sync_controls_from_editor(self):
+        editor = self._active_editor()
+        if editor is None:
+            return
+
+        if hasattr(self, "freeze_view_button"):
+            self.freeze_view_button.blockSignals(True)
+            self.freeze_view_button.setChecked(editor.freeze_view)
+            self.freeze_view_button.setText(f"Freeze view: {'ON' if editor.freeze_view else 'OFF'}")
+            self.freeze_view_button.blockSignals(False)
+
+        if hasattr(self, "pick_tolerance_input"):
+            self.pick_tolerance_input.blockSignals(True)
+            self.pick_tolerance_input.setValue(editor.pick_tolerance_m)
+            self.pick_tolerance_input.blockSignals(False)
+
+    def _on_tab_changed(self, index):
+        editor = self._active_editor()
+        if editor is not None:
+            self._apply_selection_mode_to_editor(editor)
+        self._sync_controls_from_editor()
+        self._update_status_bar()
+
+    def _editor_can_be_reused_for_open(self, editor):
+        return (
+            editor is not None
+            and not editor.gpx_loaded
+            and editor.x.size == 0
+            and not editor.current_path
+        )
+
+    def _target_editor_for_open(self):
+        editor = self._active_editor()
+        if self._editor_can_be_reused_for_open(editor):
+            return editor
+        return self._new_empty_tab()
+
+    def _open_gpx_path(self, path):
+        editor = self._target_editor_for_open()
+        if not editor.load_gpx_from_path(path):
+            return False
+
+        self._push_recent_file(path)
+        self._update_current_tab_title()
+        self._update_recent_files_combo()
+        self._update_status_bar()
+        return True
+
+    def _update_current_tab_title(self):
+        if self.tabs is None:
+            return
+        editor = self._active_editor()
+        index = self.tabs.currentIndex()
+        if editor is None or index < 0:
+            return
+        title = os.path.basename(editor.current_path) if editor.current_path else self.tabs.tabText(index)
+        self.tabs.setTabText(index, title or "Untitled")
+        if editor.current_path:
+            self.tabs.setTabToolTip(index, editor.current_path)
+
+    def _push_recent_file(self, path):
+        path = os.path.abspath(path)
+        if path in self.recent_files:
+            self.recent_files.remove(path)
+        self.recent_files.insert(0, path)
+        self.recent_files = self.recent_files[:10]
 
     def _apply_theme(self):
         self.setStyleSheet(
@@ -1506,11 +1654,6 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
 
-        figure = Figure(figsize=(12, 8), facecolor="#ffffff")
-        canvas = FigureCanvas(figure)
-
-        self.editor = GPXEditor(figure, None, canvas)
-
         self._build_toolbar()
 
         # ============================================================
@@ -1528,6 +1671,12 @@ class MainWindow(QtWidgets.QMainWindow):
         group_file_layout = QtWidgets.QVBoxLayout(group_file)
         group_file_layout.setSpacing(4)
 
+        btn_new_tab = QtWidgets.QPushButton("New tab")
+        btn_new_tab.clicked.connect(self._new_empty_tab)
+
+        btn_close_tab = QtWidgets.QPushButton("Close tab")
+        btn_close_tab.clicked.connect(self._close_current_tab)
+
         btn_open = QtWidgets.QPushButton("Open GPX")
         btn_open.clicked.connect(self._open_gpx_dialog)
 
@@ -1540,11 +1689,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.recent_files_combo.activated.connect(self._open_recent_file)
 
         btn_save = QtWidgets.QPushButton("Save…")
-        btn_save.clicked.connect(self.editor.save_gpx)
+        btn_save.clicked.connect(lambda: self.editor.save_gpx())
 
         btn_save_simple_oneline = QtWidgets.QPushButton("Save simple (1 line/point)")
-        btn_save_simple_oneline.clicked.connect(self.editor.save_simple_gpx_oneline)
+        btn_save_simple_oneline.clicked.connect(lambda: self.editor.save_simple_gpx_oneline())
 
+        group_file_layout.addWidget(btn_new_tab)
+        group_file_layout.addWidget(btn_close_tab)
         group_file_layout.addWidget(btn_open)
         group_file_layout.addWidget(btn_refresh_current)
         group_file_layout.addWidget(QtWidgets.QLabel("Recent:"))
@@ -1608,7 +1759,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.pick_tolerance_input.setRange(0.1, 1000.0)
         self.pick_tolerance_input.setDecimals(1)
         self.pick_tolerance_input.setSingleStep(1.0)
-        self.pick_tolerance_input.setValue(self.editor.pick_tolerance_m)
+        self.pick_tolerance_input.setValue(2.0)
         self.pick_tolerance_input.setSuffix(" m")
         self.pick_tolerance_input.setToolTip("Distance from cursor to point required for single-point selection and hover.")
         self.pick_tolerance_input.valueChanged.connect(self._set_pick_tolerance)
@@ -1622,7 +1773,7 @@ class MainWindow(QtWidgets.QMainWindow):
         group_selection_edit_layout.setSpacing(4)
 
         btn_delete_selected = QtWidgets.QPushButton("Delete selected")
-        btn_delete_selected.clicked.connect(self.editor.delete_selected)
+        btn_delete_selected.clicked.connect(lambda: self.editor.delete_selected())
 
         btn_clear_selection = QtWidgets.QPushButton("Clear selection")
         btn_clear_selection.clicked.connect(self._clear_selection)
@@ -1636,7 +1787,7 @@ class MainWindow(QtWidgets.QMainWindow):
         group_view_layout.setSpacing(4)
 
         btn_reset_view = QtWidgets.QPushButton("Reset view")
-        btn_reset_view.clicked.connect(self.editor._reset_view)
+        btn_reset_view.clicked.connect(lambda: self.editor._reset_view())
 
         self.freeze_view_button = QtWidgets.QPushButton("Freeze view: OFF")
         self.freeze_view_button.setObjectName("freezeViewButton")
@@ -1646,13 +1797,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.freeze_view_button.toggled.connect(self._set_freeze_view)
 
         btn_copy = QtWidgets.QPushButton("Copy coordinates")
-        btn_copy.clicked.connect(self.editor.copy_selected_coords)
+        btn_copy.clicked.connect(lambda: self.editor.copy_selected_coords())
 
         btn_preview = QtWidgets.QPushButton("Open in browser")
         btn_preview.clicked.connect(lambda: self.editor.show_map())
 
         btn_notepad = QtWidgets.QPushButton("Open in Notepad")
-        btn_notepad.clicked.connect(self.editor.open_in_notepad)
+        btn_notepad.clicked.connect(lambda: self.editor.open_in_notepad())
 
         group_view_layout.addWidget(btn_reset_view)
         group_view_layout.addWidget(self.freeze_view_button)
@@ -1668,16 +1819,23 @@ class MainWindow(QtWidgets.QMainWindow):
         left_layout.addWidget(group_view)
         left_layout.addStretch()
 
-        self.editor.cut_input = cut_input
+        self.cut_input = cut_input
 
         # ============================================================
-        # CENTER CANVAS
+        # CENTER TABS
         # ============================================================
 
         canvas_container = QtWidgets.QWidget()
         canvas_layout = QtWidgets.QVBoxLayout(canvas_container)
         canvas_layout.setContentsMargins(0, 0, 0, 0)
-        canvas_layout.addWidget(canvas, stretch=1)
+
+        self.tabs = QtWidgets.QTabWidget()
+        self.tabs.setDocumentMode(True)
+        self.tabs.setMovable(True)
+        self.tabs.setTabsClosable(True)
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+        self.tabs.tabCloseRequested.connect(self._close_tab)
+        canvas_layout.addWidget(self.tabs, stretch=1)
 
         # ============================================================
         # RIGHT PANEL
@@ -1763,6 +1921,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setCentralWidget(central)
 
         self._setup_status_bar()
+        self._new_empty_tab()
 
         if hasattr(self, "_update_recent_files_combo"):
             self._update_recent_files_combo()
@@ -1784,6 +1943,17 @@ class MainWindow(QtWidgets.QMainWindow):
 
         style = self.style()
         toolbar.addAction(
+            style.standardIcon(QtWidgets.QStyle.SP_FileIcon),
+            "New tab",
+            self._new_empty_tab,
+        )
+        toolbar.addAction(
+            style.standardIcon(QtWidgets.QStyle.SP_DialogCloseButton),
+            "Close tab",
+            self._close_current_tab,
+        )
+        toolbar.addSeparator()
+        toolbar.addAction(
             style.standardIcon(QtWidgets.QStyle.SP_DialogOpenButton),
             "Open",
             self._open_gpx_dialog,
@@ -1791,30 +1961,30 @@ class MainWindow(QtWidgets.QMainWindow):
         toolbar.addAction(
             style.standardIcon(QtWidgets.QStyle.SP_DialogSaveButton),
             "Save",
-            self.editor.save_gpx,
+            lambda: self.editor.save_gpx(),
         )
         toolbar.addSeparator()
 
         toolbar.addAction(
             style.standardIcon(QtWidgets.QStyle.SP_ArrowBack),
             "Undo",
-            self.editor._undo_action,
+            lambda: self.editor._undo_action(),
         )
         toolbar.addAction(
             style.standardIcon(QtWidgets.QStyle.SP_ArrowForward),
             "Redo",
-            self.editor._redo_action,
+            lambda: self.editor._redo_action(),
         )
         toolbar.addSeparator()
         toolbar.addAction(
             style.standardIcon(QtWidgets.QStyle.SP_DriveNetIcon),
             "Map ON/OFF",
-            self.editor.toggle_basemap,
+            lambda: self.editor.toggle_basemap(),
         )
         toolbar.addAction(
             style.standardIcon(QtWidgets.QStyle.SP_BrowserReload),
             "Reset view",
-            self.editor._reset_view,
+            lambda: self.editor._reset_view(),
         )
 
     def _setup_shortcuts(self):
@@ -1836,7 +2006,9 @@ class MainWindow(QtWidgets.QMainWindow):
         ):
             self._register_editor_shortcut(sequence, editor_key)
 
+        self._register_shortcut("Ctrl+N", self._new_empty_tab)
         self._register_shortcut("Ctrl+O", self._open_gpx_dialog)
+        self._register_shortcut("Ctrl+W", self._close_current_tab)
 
     def _register_editor_shortcut(self, sequence, editor_key):
         self._register_shortcut(
@@ -1874,11 +2046,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_status_bar()
 
     def _update_status_bar(self):
-        total_points = int(self.editor.x.size)
-        selected_points = len(self.editor.selected)
-        duration_text = self.editor.format_duration(self.editor.get_track_duration())
-        view_text = "Frozen" if self.editor.freeze_view else "Auto"
-        shortcuts = "Scroll=zoom | RMB=pan | Del=delete | Ctrl+Z/Y=undo/redo | R=reset | M=map"
+        if not hasattr(self, "_status_label"):
+            return
+        editor = self._active_editor()
+        if editor is None:
+            self._status_label.setText("No GPX tab")
+            return
+
+        total_points = int(editor.x.size)
+        selected_points = len(editor.selected)
+        duration_text = editor.format_duration(editor.get_track_duration())
+        view_text = "Frozen" if editor.freeze_view else "Auto"
+        shortcuts = "Scroll=zoom | RMB=pan | Del=delete | Ctrl+Z/Y=undo/redo | Ctrl+N/W=tab | R=reset | M=map"
         self._status_label.setText(
             f"Mode: {self._selection_mode} | Points: {total_points} | "
             f"Selected: {selected_points} | Time: {duration_text} | View: {view_text} | {shortcuts}"
@@ -1886,12 +2065,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _set_selection_mode(self, mode):
         self._selection_mode = mode
-        if mode == "Rectangle":
-            self.editor.activate_rectangle_selection()
-        elif mode == "Lasso":
-            self.editor.activate_lasso_selection()
-        else:
-            self.editor._deactivate_selectors()
+        editor = self._active_editor()
+        if editor is not None:
+            self._apply_selection_mode_to_editor(editor)
         self._update_status_bar()
 
     def closeEvent(self, event):
@@ -1919,9 +2095,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         path = urls[0].toLocalFile()
         if path.lower().endswith(".gpx"):
-            if self.editor.load_gpx_from_path(path):
-                self._update_recent_files_combo()
-                self._update_status_bar()
+            if self._open_gpx_path(path):
                 print(f"✅ Dropped and loaded: {path}")
             event.acceptProposedAction()
         else:
@@ -2106,13 +2280,21 @@ class MainWindow(QtWidgets.QMainWindow):
             self.terminal_process.waitForFinished(1000)
 
     def _open_gpx_dialog(self):
-        if self.editor.load_gpx():
-            self._update_recent_files_combo()
-            self._update_status_bar()
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Open GPX",
+            "",
+            "GPX files (*.gpx)",
+        )
+        if path:
+            self._open_gpx_path(path)
 
     def _refresh_current_gpx(self):
         if self.editor.reload_current_gpx():
+            if self.editor.current_path:
+                self._push_recent_file(self.editor.current_path)
             self._update_recent_files_combo()
+            self._update_current_tab_title()
             self._update_status_bar()
 
     def _select_scripts_directory(self):
@@ -2281,19 +2463,17 @@ class MainWindow(QtWidgets.QMainWindow):
         path = self.recent_files_combo.itemData(index)
         if not path:
             return
-        if self.editor.load_gpx_from_path(path):
-            self._update_recent_files_combo()
-            self._update_status_bar()
+        self._open_gpx_path(path)
 
     def _update_recent_files_combo(self):
         self.recent_files_combo.blockSignals(True)
         self.recent_files_combo.clear()
 
-        if not self.editor.recent_files:
+        if not self.recent_files:
             self.recent_files_combo.addItem("No recent files")
             self.recent_files_combo.setEnabled(False)
         else:
-            for path in self.editor.recent_files:
+            for path in self.recent_files:
                 label = os.path.basename(path) or path
                 self.recent_files_combo.addItem(label, path)
             self.recent_files_combo.setEnabled(True)
