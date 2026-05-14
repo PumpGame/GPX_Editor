@@ -1389,6 +1389,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.terminal_log_signal.connect(self._append_terminal_log)
         self._apply_theme()
         self._build_ui()
+        self._setup_shortcuts()
         self._print_listener = lambda message: self.terminal_log_signal.emit(message)
         add_print_listener(self._print_listener)
         self._append_terminal_log(f"Terminal ready: {self.terminal_cwd}")
@@ -1815,6 +1816,57 @@ class MainWindow(QtWidgets.QMainWindow):
             "Reset view",
             self.editor._reset_view,
         )
+
+    def _setup_shortcuts(self):
+        self._shortcuts = []
+        for sequence, editor_key in (
+            ("Del", "delete"),
+            ("Ctrl+Z", "ctrl+z"),
+            ("Ctrl+Y", "ctrl+y"),
+            ("R", "r"),
+            ("M", "m"),
+            ("Ctrl+S", "ctrl+s"),
+            ("[", "["),
+            ("]", "]"),
+            ("Shift+[", "shift+["),
+            ("Shift+]", "shift+]"),
+            ("Ctrl+[", "ctrl+["),
+            ("Ctrl+]", "ctrl+]"),
+            ("C", "c"),
+        ):
+            self._register_editor_shortcut(sequence, editor_key)
+
+        self._register_shortcut("Ctrl+O", self._open_gpx_dialog)
+
+    def _register_editor_shortcut(self, sequence, editor_key):
+        self._register_shortcut(
+            sequence,
+            lambda key=editor_key: self.editor._on_key(SimpleNamespace(key=key)),
+        )
+
+    def _register_shortcut(self, sequence, callback):
+        shortcut = QtGui.QShortcut(QtGui.QKeySequence(sequence), self)
+        shortcut.setContext(QtCore.Qt.WindowShortcut)
+        shortcut.activated.connect(lambda cb=callback: self._run_shortcut(cb))
+        self._shortcuts.append(shortcut)
+
+    def _run_shortcut(self, callback):
+        if self._shortcut_blocked_by_focus():
+            return
+        callback()
+        self._update_status_bar()
+
+    def _shortcut_blocked_by_focus(self):
+        widget = QtWidgets.QApplication.focusWidget()
+        while widget is not None:
+            if isinstance(widget, QtWidgets.QLineEdit):
+                return True
+            if isinstance(widget, (QtWidgets.QTextEdit, QtWidgets.QPlainTextEdit)) and not widget.isReadOnly():
+                return True
+            if isinstance(widget, (QtWidgets.QAbstractSpinBox, QtWidgets.QComboBox)):
+                return True
+            widget = widget.parentWidget()
+        return False
 
     def _setup_status_bar(self):
         self._status_label = QtWidgets.QLabel()
