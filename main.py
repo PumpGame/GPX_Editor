@@ -1406,6 +1406,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.terminal_cwd = self.project_dir
         self.terminal_process = None
         self._print_listener = None
+        self.right_panel = None
+        self.toggle_right_panel_action = None
         self.terminal_log_signal.connect(self._append_terminal_log)
         self._build_ui()
         self._setup_shortcuts()
@@ -1997,6 +1999,7 @@ class MainWindow(QtWidgets.QMainWindow):
         content_layout.addWidget(left_panel)
         content_layout.addWidget(canvas_container, stretch=1)
         content_layout.addWidget(right_panel)
+        self.right_panel = right_panel
 
         self.setCentralWidget(central)
 
@@ -2080,6 +2083,22 @@ class MainWindow(QtWidgets.QMainWindow):
         self.recent_files_combo.setToolTip("Recently opened files")
         self.recent_files_combo.activated.connect(self._open_recent_file)
         self.toolbar.addWidget(self.recent_files_combo)
+        toolbar_spacer = QtWidgets.QWidget()
+        toolbar_spacer.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
+        self.toolbar.addWidget(toolbar_spacer)
+        self.toolbar.addSeparator()
+        self.toggle_right_panel_action = self.toolbar.addAction("Hide right panel")
+        self.toggle_right_panel_action.setCheckable(True)
+        self.toggle_right_panel_action.setChecked(True)
+        self.toggle_right_panel_action.setToolTip("Collapse/expand right panel")
+        self.toggle_right_panel_action.toggled.connect(self._toggle_right_panel)
+
+    def _toggle_right_panel(self, visible):
+        if self.right_panel is None:
+            return
+        self.right_panel.setVisible(bool(visible))
+        if self.toggle_right_panel_action is not None:
+            self.toggle_right_panel_action.setText("Hide right panel" if visible else "Show right panel")
 
     def _setup_shortcuts(self):
         self._shortcuts = []
