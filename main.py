@@ -1394,7 +1394,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.terminal_process = None
         self._print_listener = None
         self.terminal_log_signal.connect(self._append_terminal_log)
-        self._apply_theme()
         self._build_ui()
         self._setup_shortcuts()
         self._print_listener = lambda message: self.terminal_log_signal.emit(message)
@@ -1690,6 +1689,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # ============================================================
 
         left_panel = QtWidgets.QWidget()
+        left_panel.setObjectName("leftPanel")
         left_layout = QtWidgets.QVBoxLayout(left_panel)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(6)
@@ -1738,9 +1738,11 @@ class MainWindow(QtWidgets.QMainWindow):
         group_delete_layout.setSpacing(4)
 
         btn_cut_start = QtWidgets.QPushButton("Remove 1 from start")
+        btn_cut_start.setProperty("class", "danger")
         btn_cut_start.clicked.connect(lambda: self.editor.remove_first_n(1))
 
         btn_cut_end = QtWidgets.QPushButton("Remove 1 from end")
+        btn_cut_end.setProperty("class", "danger")
         btn_cut_end.clicked.connect(lambda: self.editor.remove_last_n(1))
 
         cut_input = QtWidgets.QSpinBox()
@@ -1748,9 +1750,11 @@ class MainWindow(QtWidgets.QMainWindow):
         cut_input.setValue(10)
 
         btn_cut_x_start = QtWidgets.QPushButton("Remove X from start")
+        btn_cut_x_start.setProperty("class", "danger")
         btn_cut_x_start.clicked.connect(lambda: self.editor._remove_x_from("start"))
 
         btn_cut_x_end = QtWidgets.QPushButton("Remove X from end")
+        btn_cut_x_end.setProperty("class", "danger")
         btn_cut_x_end.clicked.connect(lambda: self.editor._remove_x_from("end"))
 
         group_delete_layout.addWidget(btn_cut_start)
@@ -1768,6 +1772,9 @@ class MainWindow(QtWidgets.QMainWindow):
         radio_single = QtWidgets.QRadioButton("Single point")
         radio_rect = QtWidgets.QRadioButton("Rectangle")
         radio_lasso = QtWidgets.QRadioButton("Lasso")
+        radio_single.setProperty("class", "sel-mode")
+        radio_rect.setProperty("class", "sel-mode")
+        radio_lasso.setProperty("class", "sel-mode")
 
         radio_single.setChecked(True)
 
@@ -1802,6 +1809,7 @@ class MainWindow(QtWidgets.QMainWindow):
         group_selection_edit_layout.setSpacing(4)
 
         btn_delete_selected = QtWidgets.QPushButton("Delete selected")
+        btn_delete_selected.setObjectName("dangerButton")
         btn_delete_selected.clicked.connect(lambda: self.editor.delete_selected())
 
         btn_clear_selection = QtWidgets.QPushButton("Clear selection")
@@ -1871,6 +1879,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # ============================================================
 
         right_panel = QtWidgets.QWidget()
+        right_panel.setObjectName("rightPanel")
         right_layout = QtWidgets.QVBoxLayout(right_panel)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(6)
@@ -1904,7 +1913,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.terminal_cwd_label.setToolTip(self.terminal_cwd)
 
         self.terminal_output = QtWidgets.QPlainTextEdit()
-        self.terminal_output.setObjectName("terminalOutput")
+        self.terminal_output.setObjectName("logsText")
         self.terminal_output.setReadOnly(True)
         self.terminal_output.setLineWrapMode(QtWidgets.QPlainTextEdit.WidgetWidth)
         self.terminal_output.setMaximumBlockCount(3000)
@@ -2071,6 +2080,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _setup_status_bar(self):
         self._status_label = QtWidgets.QLabel()
+        self._status_label.setObjectName("selectedCount")
         self.statusBar().addPermanentWidget(self._status_label, 1)
         self._update_status_bar()
 
@@ -2525,6 +2535,11 @@ if __name__ == "__main__":
         except Exception:
             pass
     app = QtWidgets.QApplication(sys.argv)
+    app.setStyle("Fusion")
+    qss_path = os.path.join(os.path.dirname(__file__), "gpxeditor-theme.qss")
+    if os.path.isfile(qss_path):
+        with open(qss_path, "r", encoding="utf-8") as f:
+            app.setStyleSheet(f.read())
     app.setApplicationName("GPXEditor")
     if os.path.exists(APP_ICON_PATH):
         app.setWindowIcon(QtGui.QIcon(APP_ICON_PATH))
