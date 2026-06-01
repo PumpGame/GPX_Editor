@@ -956,21 +956,21 @@ class GPXEditor:
         self._update_info_text()
         print("Selection cleared")
 
-    def grow_selection(self):
+    def grow_selection(self, steps=1):
         if self.x.size == 0 or not self.selected:
             return
+        steps = max(1, int(steps))
         grown = set(self.selected)
         for idx in self.selected:
-            if idx > 0:
-                grown.add(idx - 1)
-            if idx < self.x.size - 1:
-                grown.add(idx + 1)
+            lo = max(0, idx - steps)
+            hi = min(self.x.size - 1, idx + steps)
+            grown.update(range(lo, hi + 1))
         if grown == self.selected:
             return
         self.selected = grown
         self._update_plot()
         self._update_info_text()
-        print(f"Selection grown to {len(self.selected)} points")
+        print(f"Selection grown by {steps} to {len(self.selected)} points")
 
     # -------------------------- Zdarzenia --------------------------
 
@@ -1863,9 +1863,17 @@ class MainWindow(QtWidgets.QMainWindow):
         selection_actions_row.addWidget(btn_delete_selected)
         selection_actions_row.addWidget(btn_clear_selected)
         left_layout.addLayout(selection_actions_row)
+        grow_row = QtWidgets.QHBoxLayout()
         btn_grow_selection = QtWidgets.QPushButton("Grow selection")
         btn_grow_selection.clicked.connect(self._grow_selection)
-        left_layout.addWidget(btn_grow_selection)
+        self.grow_selection_input = QtWidgets.QSpinBox()
+        self.grow_selection_input.setRange(1, 9999)
+        self.grow_selection_input.setValue(1)
+        self.grow_selection_input.setAlignment(QtCore.Qt.AlignCenter)
+        self.grow_selection_input.setToolTip("Grow steps")
+        grow_row.addWidget(btn_grow_selection)
+        grow_row.addWidget(self.grow_selection_input)
+        left_layout.addLayout(grow_row)
 
         edit_header = QtWidgets.QLabel("Edit points")
         edit_header.setProperty("class", "section-header")
@@ -2277,7 +2285,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_status_bar()
 
     def _grow_selection(self):
-        self.editor.grow_selection()
+        steps = int(self.grow_selection_input.value()) if hasattr(self, "grow_selection_input") else 1
+        self.editor.grow_selection(steps)
         self._update_status_bar()
 
     def _append_terminal_log(self, text):
