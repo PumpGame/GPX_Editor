@@ -198,7 +198,7 @@ class GPXEditor:
 
     def _set_title(self):
         try:
-            self.fig.canvas.manager.set_window_title("GPXEditor â€” by surfplorer")
+            self.fig.canvas.manager.set_window_title("GPXEditor - by surfplorer")
         except Exception:
             pass
         self.ax.set_title("")
@@ -247,14 +247,14 @@ class GPXEditor:
 
     def reload_current_gpx(self):
         if not self.current_path:
-            print("âš ï¸ No GPX file loaded to refresh.")
+            print("[WARN] No GPX file loaded to refresh.")
             return False
         return self.load_gpx_from_path(self.current_path)
 
     def load_gpx_from_path(self, path):
         path = os.path.abspath(path)
         if not path or not os.path.exists(path):
-            print(f"âš ï¸ File not found: {path}")
+            print(f"[WARN] File not found: {path}")
             return False
 
         if self.freeze_view:
@@ -264,7 +264,7 @@ class GPXEditor:
             with open(path, 'r', encoding='utf-8') as f:
                 self.gpx = gpxpy.parse(f)
         except Exception as e:
-            print(f"âŒ Failed to open GPX: {e}")
+            print(f"[ERROR] Failed to open GPX: {e}")
             return False
 
         # Wybierz najwiÄ™kszy segment w caÅ‚ym pliku
@@ -279,7 +279,7 @@ class GPXEditor:
                     best_track = tr
 
         if not best_seg or best_len < 2:
-            print("âŒ GPX does not contain a valid segment.")
+            print("[ERROR] GPX does not contain a valid segment.")
             return False
 
         self.track = best_track
@@ -312,12 +312,12 @@ class GPXEditor:
         self._update_info_text()
         self.current_path = path
         self._push_recent_file(path)
-        print(f"âœ… Loaded: {path} | points: {len(self.x)}")
+        print(f"[INFO] Loaded: {path} | points: {len(self.x)}")
         return True
 
     def sync_from_loaded_gpx(self, reset_history=False, reset_view=True):
         if self.gpx is None:
-            print("âš ï¸ No GPX object loaded.")
+            print("[WARN] No GPX object loaded.")
             return False
 
         best_seg = None
@@ -331,7 +331,7 @@ class GPXEditor:
                     best_track = tr
 
         if not best_seg or best_len < 2:
-            print("âŒ GPX does not contain a valid segment after script.")
+            print("[ERROR] GPX does not contain a valid segment after script.")
             return False
 
         self.track = best_track
@@ -424,7 +424,7 @@ class GPXEditor:
     def save_simple_gpx_oneline(self):
         """Save GPX simplified: minimal format, 1 point = 1 line"""
         if not self.gpx_loaded:
-            print("âš ï¸ Open a GPX file first")
+            print("[WARN] Open a GPX file first")
             return
 
         lons, lats = self.to_wgs84.transform(self.x, self.y)
@@ -465,14 +465,14 @@ class GPXEditor:
         if path:
             with open(path, 'w', encoding='utf-8') as f:
                 f.write('\n'.join(lines))
-            print("ðŸ’¾ Simple GPX (one line per point) saved as:", path)
+            print("[INFO] Simple GPX (one line per point) saved as:", path)
         else:
-            print("âŒ Save cancelled.")
+            print("[ERROR] Save cancelled.")
 
     def save_simple_gpx(self):
         """Save GPX with only basic data: lat, lon, time"""
         if not self.gpx_loaded:
-            print("âš ï¸ Open a GPX file first")
+            print("[WARN] Open a GPX file first")
             return
 
         lons, lats = self.to_wgs84.transform(self.x, self.y)
@@ -513,16 +513,16 @@ class GPXEditor:
         if path:
             with open(path, 'w', encoding='utf-8') as f:
                 f.write('\n'.join(xml_lines))
-            print("ðŸ’¾ Simple GPX saved as:", path)
+            print("[INFO] Simple GPX saved as:", path)
         else:
-            print("âŒ Save cancelled.")
+            print("[ERROR] Save cancelled.")
 
     # -------------------------- PodkÅ‚ad / folium --------------------------
 
     def toggle_basemap(self):
         self.basemap_enabled = not self.basemap_enabled
         self._update_plot(full=True)
-        print(f"ðŸ—ºï¸ Basemap: {'ON' if self.basemap_enabled else 'OFF'}")
+        print(f"[INFO] Basemap: {'ON' if self.basemap_enabled else 'OFF'}")
 
     def _ensure_basemap(self):
         if not self.basemap_enabled or self.basemap_loaded or self.x.size == 0:
@@ -539,7 +539,7 @@ class GPXEditor:
                 y0, y1 = float(self.y.min() - pad), float(self.y.max() + pad)
             zoom = self._choose_basemap_zoom(x0, y0, x1, y1)
             if zoom is None:
-                print("âš ï¸ Basemap skipped: visible area is too large. Zoom in and enable map again.")
+                print("[WARN] Basemap skipped: visible area is too large. Zoom in and enable map again.")
                 self.basemap_enabled = False
                 return
             self.basemap_img, self.basemap_extent = ctx.bounds2img(
@@ -547,7 +547,7 @@ class GPXEditor:
             )
             self.basemap_loaded = True
         except Exception as e:
-            print("âŒ Failed to load map:", e)
+            print("[ERROR] Failed to load map:", e)
             self.basemap_enabled = False
 
     @staticmethod
@@ -581,7 +581,7 @@ class GPXEditor:
     def open_in_notepad(self):
         """Open current GPX data in Notepad"""
         if not self.gpx_loaded:
-            print("âš ï¸ Open a GPX file first")
+            print("[WARN] Open a GPX file first")
             return
 
         lons, lats = self.to_wgs84.transform(self.x, self.y)
@@ -620,9 +620,9 @@ class GPXEditor:
             
             # Open in Notepad
             subprocess.Popen(['notepad.exe', temp_path])
-            print(f"ðŸ“ Opened in Notepad: {temp_path}")
+            print(f"[INFO] Opened in Notepad: {temp_path}")
         except Exception as e:
-            print(f"âŒ Error opening in Notepad: {e}")
+            print(f"[ERROR] Error opening in Notepad: {e}")
 
     # -------------------------- Edycja / selekcja --------------------------
 
@@ -781,7 +781,7 @@ class GPXEditor:
             self.ax, self._on_rect_select, useblit=True,
             button=[1], minspanx=5, minspany=5, spancoords='pixels', interactive=False
         )
-        print("ðŸ”² Mode: rectangle selection (click and drag)")
+        print("[INFO] Mode: rectangle selection (click and drag)")
 
     def _on_rect_select(self, eclick, erelease):
         if eclick.xdata is None or eclick.ydata is None or erelease.xdata is None or erelease.ydata is None:
@@ -793,7 +793,7 @@ class GPXEditor:
         if idxs:
             self._push_undo()
             self.selected.update(idxs)
-            print(f"ðŸ”² Selected {len(idxs)} points (rectangle)")
+            print(f"[INFO] Selected {len(idxs)} points (rectangle)")
             self._update_plot()
             self._update_info_text()
 
@@ -804,7 +804,7 @@ class GPXEditor:
     def activate_lasso_selection(self):
         self._deactivate_selectors()
         self.lasso_selector = LassoSelector(self.ax, onselect=self._on_lasso_select)
-        print("âœï¸ Mode: lasso selection (draw around points)")
+        print("[INFO] Mode: lasso selection (draw around points)")
 
     def _on_lasso_select(self, verts):
         if not verts:
@@ -823,7 +823,7 @@ class GPXEditor:
         if idxs:
             self._push_undo()
             self.selected.update(idxs)
-            print(f"âœï¸ Selected {len(idxs)} points (lasso)")
+            print(f"[INFO] Selected {len(idxs)} points (lasso)")
             self._update_plot()
             self._update_info_text()
 
@@ -850,7 +850,7 @@ class GPXEditor:
     # ---- kopiowanie wspÃ³Å‚rzÄ™dnych ----
     def copy_selected_coords(self):
         if not self.selected:
-            print("â„¹ï¸ No selection.")
+            print("[INFO] No selection.")
             return
         duration_text = self.format_duration(self.get_track_duration())
         lines = [
@@ -868,24 +868,24 @@ class GPXEditor:
         try:
             clipboard = self.qt_app.clipboard()
             clipboard.setText(text)
-            print("ðŸ“‹ Copied to clipboard:")
+            print("[INFO] Copied to clipboard:")
             print(text)
         except Exception as e:
-            print("âŒ Failed to copy to clipboard:", e)
+            print("[ERROR] Failed to copy to clipboard:", e)
 
     # ---- przycinanie ----
     def _remove_x_from(self, where):
         if self.cut_input is None:
-            print("âš ï¸ Missing X input field.")
+            print("[WARN] Missing X input field.")
             return
         value = self.cut_input.text().strip()
         try:
             n = int(value)
         except Exception:
-            print("âš ï¸ Enter an integer in the X field.")
+            print("[WARN] Enter an integer in the X field.")
             return
         if n <= 0:
-            print("âš ï¸ X must be > 0.")
+            print("[WARN] X must be > 0.")
             return
         if where == 'start':
             self.remove_first_n(n)
@@ -909,7 +909,7 @@ class GPXEditor:
         self.kdtree = KDTree(np.c_[self.x, self.y]) if KDTree is not None else None
         self._update_plot(full=True)
         self._update_info_text()
-        print(f"ðŸ”» Removed the first {n} points")
+        print(f"[INFO] Removed the first {n} points")
 
     def remove_last_n(self, n):
         if self.x.size <= 1:
@@ -927,7 +927,7 @@ class GPXEditor:
         self.kdtree = KDTree(np.c_[self.x, self.y]) if KDTree is not None else None
         self._update_plot(full=True)
         self._update_info_text()
-        print(f"ðŸ”º Removed the last {n} points")
+        print(f"[INFO] Removed the last {n} points")
 
     def delete_selected(self):
         if not self.selected:
@@ -946,7 +946,7 @@ class GPXEditor:
         self.kdtree = KDTree(np.c_[self.x, self.y]) if KDTree is not None else None
         self._update_plot(full=True)
         self._update_info_text()
-        print(f"ðŸ—‘ï¸ Removed {removed} points")
+        print(f"[INFO] Removed {removed} points")
 
     def clear_selection(self):
         if not self.selected:
@@ -955,6 +955,22 @@ class GPXEditor:
         self._update_plot()
         self._update_info_text()
         print("Selection cleared")
+
+    def grow_selection(self):
+        if self.x.size == 0 or not self.selected:
+            return
+        grown = set(self.selected)
+        for idx in self.selected:
+            if idx > 0:
+                grown.add(idx - 1)
+            if idx < self.x.size - 1:
+                grown.add(idx + 1)
+        if grown == self.selected:
+            return
+        self.selected = grown
+        self._update_plot()
+        self._update_info_text()
+        print(f"Selection grown to {len(self.selected)} points")
 
     # -------------------------- Zdarzenia --------------------------
 
@@ -1378,11 +1394,11 @@ class GPXEditor:
         for idx in sorted(self.selected):
             if 0 <= idx < len(self.point_metadata):
                 p = self.point_metadata[idx]
-                t = p.time.isoformat() if p.time else "â€”"
-                ele = f"{p.elevation:.1f} m" if p.elevation is not None else "â€”"
+                t = p.time.isoformat() if p.time else "-"
+                ele = f"{p.elevation:.1f} m" if p.elevation is not None else "-"
                 # lat/lon po aktualnej edycji
                 lon, lat = self.to_wgs84.transform(self.x[idx], self.y[idx])
-                lines.append(f"#{idx} â€” lat={lat:.7f}, lon={lon:.7f} | t={t} | ele={ele}")
+                lines.append(f"#{idx} - lat={lat:.7f}, lon={lon:.7f} | t={t} | ele={ele}")
         self.info_text.set_text("\n".join(lines))
         self.fig.canvas.draw_idle()
 
@@ -1392,7 +1408,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("GPXEditor â€” by surfplorer")
+        self.setWindowTitle("GPXEditor - by surfplorer")
         if os.path.exists(APP_ICON_PATH):
             self.setWindowIcon(QtGui.QIcon(APP_ICON_PATH))
         self.resize(1560, 940)
@@ -1838,6 +1854,18 @@ class MainWindow(QtWidgets.QMainWindow):
         left_layout.addWidget(sel_header)
         left_layout.addLayout(sel_row)
         left_layout.addLayout(radius_row)
+        selection_actions_row = QtWidgets.QHBoxLayout()
+        btn_delete_selected = QtWidgets.QPushButton("Delete selected")
+        btn_delete_selected.setObjectName("dangerButton")
+        btn_delete_selected.clicked.connect(self._delete_selected)
+        btn_clear_selected = QtWidgets.QPushButton("Clear selection")
+        btn_clear_selected.clicked.connect(self._clear_selection)
+        selection_actions_row.addWidget(btn_delete_selected)
+        selection_actions_row.addWidget(btn_clear_selected)
+        left_layout.addLayout(selection_actions_row)
+        btn_grow_selection = QtWidgets.QPushButton("Grow selection")
+        btn_grow_selection.clicked.connect(self._grow_selection)
+        left_layout.addWidget(btn_grow_selection)
 
         edit_header = QtWidgets.QLabel("Edit points")
         edit_header.setProperty("class", "section-header")
@@ -1876,7 +1904,7 @@ class MainWindow(QtWidgets.QMainWindow):
         separator = QtWidgets.QFrame()
         separator.setFrameShape(QtWidgets.QFrame.HLine)
         separator.setProperty("class", "separator")
-        view_header = QtWidgets.QLabel("View / tools")
+        view_header = QtWidgets.QLabel("View")
         view_header.setProperty("class", "section-header")
         btn_reset_view = QtWidgets.QPushButton("Reset view")
         btn_reset_view.clicked.connect(lambda: self.editor._reset_view())
@@ -1884,29 +1912,29 @@ class MainWindow(QtWidgets.QMainWindow):
         self.freeze_view_button.setObjectName("freezeViewButton")
         self.freeze_view_button.setCheckable(True)
         self.freeze_view_button.toggled.connect(self._set_freeze_view)
-        btn_copy = QtWidgets.QPushButton("Copy coords")
-        btn_copy.clicked.connect(lambda: self.editor.copy_selected_coords())
         btn_preview = QtWidgets.QPushButton("Browser")
         btn_preview.clicked.connect(lambda: self.editor.show_map())
+        tools_header = QtWidgets.QLabel("Tools")
+        tools_header.setProperty("class", "section-header")
+        btn_copy = QtWidgets.QPushButton("Copy coords")
+        btn_copy.clicked.connect(lambda: self.editor.copy_selected_coords())
         btn_notepad = QtWidgets.QPushButton("Open in Notepad")
         btn_notepad.clicked.connect(lambda: self.editor.open_in_notepad())
         view_row1 = QtWidgets.QHBoxLayout()
         view_row1.addWidget(btn_reset_view)
         view_row1.addWidget(self.freeze_view_button)
         view_row2 = QtWidgets.QHBoxLayout()
-        view_row2.addWidget(btn_copy)
         view_row2.addWidget(btn_preview)
+        tools_row = QtWidgets.QHBoxLayout()
+        tools_row.addWidget(btn_copy)
+        tools_row.addWidget(btn_notepad)
         left_layout.addWidget(separator)
         left_layout.addWidget(view_header)
         left_layout.addLayout(view_row1)
         left_layout.addLayout(view_row2)
-        left_layout.addWidget(btn_notepad)
-
-        btn_delete_selected = QtWidgets.QPushButton("Delete selected")
-        btn_delete_selected.setObjectName("dangerButton")
-        btn_delete_selected.clicked.connect(lambda: self.editor.delete_selected())
+        left_layout.addWidget(tools_header)
+        left_layout.addLayout(tools_row)
         left_layout.addStretch()
-        left_layout.addWidget(btn_delete_selected)
         self.cut_input = cut_input
 
         canvas_container = QtWidgets.QWidget()
@@ -2224,7 +2252,7 @@ class MainWindow(QtWidgets.QMainWindow):
         path = urls[0].toLocalFile()
         if path.lower().endswith(".gpx"):
             if self._open_gpx_path(path):
-                print(f"âœ… Dropped and loaded: {path}")
+                print(f"[INFO] Dropped and loaded: {path}")
             event.acceptProposedAction()
         else:
             event.ignore()
@@ -2242,6 +2270,14 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _clear_selection(self):
         self.editor.clear_selection()
+        self._update_status_bar()
+
+    def _delete_selected(self):
+        self.editor.delete_selected()
+        self._update_status_bar()
+
+    def _grow_selection(self):
+        self.editor.grow_selection()
         self._update_status_bar()
 
     def _append_terminal_log(self, text):
@@ -2543,7 +2579,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._update_status_bar()
         self.statusBar().showMessage(f"Script completed: {script_name}", 5000)
-        print(f"âœ… Script completed: {script_path}")
+        print(f"[INFO] Script completed: {script_path}")
 
     def _call_custom_script(self, run_func):
         context = SimpleNamespace(
