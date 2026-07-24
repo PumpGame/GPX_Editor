@@ -11,11 +11,6 @@ GPXEditor — single-file GPX track editor with:
 Tested on Python 3.10+ with QtAgg backend.
 Dependencies: matplotlib (QtAgg), PySide6, gpxpy, folium, contextily, pyproj, numpy (optional: scipy for KDTree)
 """
-import matplotlib
-matplotlib.use("QtAgg")
-
-import matplotlib.pyplot as plt
-
 import sys
 import os
 import atexit
@@ -31,6 +26,26 @@ import tempfile
 import traceback
 import time
 from types import SimpleNamespace
+
+APP_BASE_DIR = os.path.dirname(os.path.abspath(sys.executable)) if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__))
+
+
+def ensure_runtime_cache_dirs():
+    cache_root = os.path.join(APP_BASE_DIR, ".cache")
+    mpl_config_dir = os.path.join(cache_root, "matplotlib")
+    fontconfig_cache_dir = os.path.join(cache_root, "fontconfig")
+    for path in (cache_root, mpl_config_dir, fontconfig_cache_dir):
+        os.makedirs(path, exist_ok=True)
+    os.environ.setdefault("MPLCONFIGDIR", mpl_config_dir)
+    os.environ.setdefault("XDG_CACHE_HOME", cache_root)
+
+
+ensure_runtime_cache_dirs()
+
+import matplotlib
+matplotlib.use("QtAgg")
+
+import matplotlib.pyplot as plt
 
 import numpy as np
 import gpxpy
